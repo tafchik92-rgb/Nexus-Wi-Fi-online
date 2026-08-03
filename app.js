@@ -25,6 +25,19 @@ function showLogin() {
   $("#lg-code").value = "";
   $("#lg-pin").value = "";
 
+  // Cloud mode: only the server knows who exists, so always offer the login,
+  // with setup reachable for a brand-new Firebase project.
+  if (typeof Backend !== "undefined" && Backend.enabled) {
+    $("#setup-box").hidden = !ui.showSetup;
+    $("#login-box").hidden = !!ui.showSetup;
+    $("#setup-lead").innerHTML = `Setting up a <b>new cloud shop</b>. This creates the founding administrator on your Firebase project — it only works while no staff exist there.`;
+    $("#st-site-wrap").hidden = false;
+    $("#setup-demo-wrap").hidden = true;
+    $("#login-hint").innerHTML = `Cloud mode — <button type="button" class="link-btn" data-action="show-setup">set up a new shop</button>`;
+    setTimeout(() => $(ui.showSetup ? "#st-name" : "#lg-code").focus(), 40);
+    return;
+  }
+
   // If nobody can sign in — an empty store, or one restored from v1 where no
   // account has a PIN — show setup. Otherwise the login form is unwinnable.
   const usable = usableUsers();
@@ -68,6 +81,20 @@ async function runSetup() {
   if (!/^\d{4,8}$/.test(pin)) return fail("PIN must be 4–8 digits.");
   if (!siteName) return fail("Name your first site.");
 
+  if (typeof Backend !== "undefined" && Backend.enabled) {
+    try {
+      if (!Backend.ready) await Backend.connect();
+      const staff = await Backend.bootstrap({ name, code, pin, siteName });
+      await Backend.startSync(() => renderAll());
+      session = { userId: staff.id, siteId: "" };
+      saveSession();
+      enterApp();
+      return toast(`Welcome, ${name} — this shop is now live on your Firebase project`);
+    } catch (e) {
+      return fail(cloudError(e));
+    }
+  }
+
   if (db.users.some((u) => u.code.toUpperCase() === code)) {
     return fail(`Code ${code} already belongs to a staff record — pick another.`);
   }
@@ -92,7 +119,6 @@ async function runSetup() {
 }
 
 async function attemptLogin(code, pin) {
-  const user = db.users.find((u) => u.code.toUpperCase() === String(code).trim().toUpperCase());
   const fail = (msg) => {
     const err = $("#login-err");
     err.textContent = msg;
@@ -100,6 +126,23 @@ async function attemptLogin(code, pin) {
     $("#login-form").classList.add("shake");
     setTimeout(() => $("#login-form").classList.remove("shake"), 500);
   };
+
+  // Cloud mode: the PIN is checked on the server and never trusted here.
+  if (typeof Backend !== "undefined" && Backend.enabled) {
+    try {
+      if (!Backend.ready) await Backend.connect();
+      const staff = await Backend.signIn(String(code).trim(), String(pin).trim());
+      await Backend.startSync(() => renderAll());
+      session = { userId: staff.id, siteId: staff.role === "admin" ? "" : (staff.siteIds || [])[0] || "" };
+      saveSession();
+      enterApp();
+      return toast(`Signed in as ${staff.name}`);
+    } catch (e) {
+      return fail(cloudError(e));
+    }
+  }
+
+  const user = db.users.find((u) => u.code.toUpperCase() === String(code).trim().toUpperCase());
   if (!user) return fail("No staff member with that code.");
   if (user.status !== "active") return fail("That account is suspended. Ask an administrator.");
   if (!user.pinHash) return fail("No PIN set for this account. An administrator must reset it.");
@@ -112,7 +155,14 @@ async function attemptLogin(code, pin) {
   toast(`Signed in as ${user.name}`);
 }
 
+// Firebase errors arrive prefixed; show the message the function actually sent.
+function cloudError(e) {
+  const msg = String((e && e.message) || e || "Unknown error").replace(/^.*?\/\s*/, "");
+  return msg || "Could not reach the server.";
+}
+
 function logout() {
+  if (typeof Backend !== "undefined" && Backend.enabled && Backend.ready) Backend.signOut().catch(() => {});
   clearSession();
   ui.sale = { type: null, pay: "cash" };
   showLogin();
@@ -178,7 +228,7 @@ function setTab(tab, sub) {
 function routeFromHash() {
   const [tab, sub] = location.hash.replace("#", "").split("/");
   setTab(tab || (isAdmin() ? "admin" : "terminal"),
-    ["dash", "team", "vouchers", "sites", "credit", "reports"].includes(sub) ? sub : undefined);
+    ["dash", "team", "vouchers", "sites", "credit", "reports", "cloud"].includes(sub) ? sub : undefined);
 }
 
 /* ------------------------------------------------------------
@@ -197,6 +247,7 @@ function renderAll() {
     renderVouchers();
     renderAdminCredit();
     renderAdminReports();
+    renderCloud();
     renderTerminal();
   } else {
     renderTerminal();
@@ -326,6 +377,28 @@ async function seedDemo() {
   toast("Demo shop loaded — sign in with ADM-01 / 1234");
 }
 
+// Rename a site in place. Records reference sites by id, so the change is
+// retroactive: past sales, vouchers and closed reports follow the new name.
+function saveSiteEdit() {
+  const site = siteById(ui.editSite);
+  if (!site) return;
+  const name = $("#site-edit-name").value.trim();
+  const code = $("#site-edit-code").value.trim().toUpperCase();
+  if (!name) return toast("Site name cannot be empty", "err");
+  if (!code) return toast("Site code cannot be empty", "err");
+  if (db.sites.some((s) => s.id !== site.id && s.code === code)) {
+    return toast(`Site code ${code} is already in use`, "err");
+  }
+  const was = site.name;
+  site.name = name;
+  site.code = code;
+  touch("sites", site);
+  save();
+  $("#modal-site").hidden = true;
+  enterApp();     // refresh the header's site selector labels too
+  toast(was === name ? `Site ${name} updated` : `${was} renamed to ${name}`);
+}
+
 /* ------------------------------------------------------------
    Wiring
    ------------------------------------------------------------ */
@@ -359,10 +432,16 @@ function wire() {
   $("#pin-save").addEventListener("click", async () => {
     const user = currentUser();
     const oldPin = $("#pin-old").value.trim(), newPin = $("#pin-new").value.trim();
-    if (user.pinHash && !(await verifyPin(user, oldPin))) return toast("Current PIN is incorrect", "err");
     if (!/^\d{4,8}$/.test(newPin)) return toast("New PIN must be 4–8 digits", "err");
-    await setUserPin(user, newPin);
-    save();
+    if (cloudMode()) {
+      try {
+        await Backend.call("changePin", { currentPin: oldPin, newPin });
+      } catch (e) { return toast(cloudError(e), "err"); }
+    } else {
+      if (user.pinHash && !(await verifyPin(user, oldPin))) return toast("Current PIN is incorrect", "err");
+      await setUserPin(user, newPin);
+      save();
+    }
     $("#modal-pin").hidden = true;
     toast("PIN updated");
   });
@@ -405,6 +484,37 @@ function wire() {
   $("#vf-type").addEventListener("change", (e) => { ui.vfilters.type = e.target.value; renderVouchers(); });
   $("#vf-status").addEventListener("change", (e) => { ui.vfilters.status = e.target.value; renderVouchers(); });
 
+  // cloud panel
+  $("#cloud-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    let config;
+    try {
+      config = JSON.parse($("#cloud-config").value.trim());
+    } catch (_) { return toast("That is not valid JSON — paste the firebaseConfig object", "err"); }
+    if (!config.projectId || !config.apiKey) return toast("Config needs at least apiKey and projectId", "err");
+    config.useEmulators = $("#cloud-emulators").checked;
+    Backend.saveConfig(config, true);
+    try {
+      await Backend.connect();
+      toast("Connected — sign out and back in to authenticate against the server");
+    } catch (err) {
+      Backend.enabled = false;
+      return toast(cloudError(err), "err");
+    }
+    renderAll();
+  });
+  $("#btn-cloud-disable").addEventListener("click", async () => {
+    if (!(await confirmDlg("Switch back to local mode? Cloud data stays on the server; this browser returns to its own local store."))) return;
+    if (Backend.ready) await Backend.signOut().catch(() => {});
+    Backend.clearConfig();
+    Backend.ready = false;
+    clearSession();
+    db = loadDb();
+    showLogin();
+    toast("Back in local mode");
+  });
+  $("#btn-cloud-push").addEventListener("click", pushLocalToCloud);
+
   // credit search
   $("#credit-q").addEventListener("input", renderAdminCredit);
   $("#ag-credit-q").addEventListener("input", renderAgentCredit);
@@ -441,6 +551,8 @@ function wire() {
   $("#settle-full").addEventListener("click", () => {
     $("#settle-amount").value = accountBalance(ui.settleAccount);
   });
+  $("#site-edit-cancel").addEventListener("click", () => { $("#modal-site").hidden = true; });
+  $("#site-edit-save").addEventListener("click", saveSiteEdit);
   $("#stmt-close").addEventListener("click", () => { $("#modal-stmt").hidden = true; });
   $("#stmt-settle").addEventListener("click", (e) => {
     $("#modal-stmt").hidden = true;
@@ -469,6 +581,7 @@ function wire() {
       const u = userById(id);
       if (!u || (session && u.id === session.userId)) return;
       u.status = u.status === "active" ? "inactive" : "active";
+      touch("users", u);
       save(); renderAll();
       toast(`${u.name} is now ${u.status.toUpperCase()}`);
     }
@@ -477,16 +590,25 @@ function wire() {
       if (!u || db.sales.some((s) => s.agentId === id)) return;
       if (!(await confirmDlg(`Remove ${u.name} (${u.code}) from the team?`))) return;
       db.users = db.users.filter((x) => x.id !== id);
+      drop("users", id);
       save(); renderAll();
       toast(`${u.name} removed`);
     }
     if (action === "reset-pin") {
       const u = userById(id);
       if (!u) return;
-      const pin = String(Math.floor(1000 + Math.random() * 9000));
       if (!(await confirmDlg(`Reset the PIN for ${u.name}? A new 4-digit PIN will be shown once.`))) return;
-      await setUserPin(u, pin);
-      save(); renderAll();
+      let pin;
+      if (cloudMode()) {
+        try {
+          pin = (await Backend.call("resetPin", { staffId: u.id })).pin;
+        } catch (e) { return toast(cloudError(e), "err"); }
+      } else {
+        pin = String(Math.floor(1000 + Math.random() * 9000));
+        await setUserPin(u, pin);
+        save();
+      }
+      renderAll();
       $("#sale-code").textContent = pin;
       $("#sale-details").innerHTML = `<div><dt>STAFF</dt><dd>${esc(u.name)} · ${esc(u.code)}</dd></div>
         <div><dt>NOTE</dt><dd>Share this PIN with them and have them change it after signing in.</dd></div>`;
@@ -494,10 +616,20 @@ function wire() {
       $("#modal-sale-sub").textContent = "NEW PIN — SHOWN ONCE";
       $("#modal-sale").hidden = false;
     }
+    if (action === "edit-site") {
+      const s = siteById(id);
+      if (!s) return;
+      ui.editSite = id;
+      $("#site-edit-name").value = s.name;
+      $("#site-edit-code").value = s.code;
+      $("#modal-site").hidden = false;
+      setTimeout(() => $("#site-edit-name").select(), 30);
+    }
     if (action === "toggle-site") {
       const s = siteById(id);
       if (!s) return;
       s.status = s.status === "active" ? "closed" : "active";
+      touch("sites", s);
       save(); renderAll();
       toast(`${s.name} is now ${s.status.toUpperCase()}`);
     }
@@ -509,7 +641,13 @@ function wire() {
       }
       if (!(await confirmDlg(`Delete site ${s.name}?`))) return;
       db.sites = db.sites.filter((x) => x.id !== id);
-      for (const u of db.users) u.siteIds = (u.siteIds || []).filter((x) => x !== id);
+      drop("sites", id);
+      for (const u of db.users) {
+        if ((u.siteIds || []).includes(id)) {
+          u.siteIds = u.siteIds.filter((x) => x !== id);
+          touch("users", u);
+        }
+      }
       save(); renderAll();
       toast(`Site ${s.name} deleted`);
     }
@@ -518,16 +656,20 @@ function wire() {
       if (!v || v.status !== "available") return;
       if (!(await confirmDlg(`Purge voucher ${v.code} from ${siteName(v.siteId)}?`))) return;
       db.vouchers = db.vouchers.filter((x) => x.id !== id);
+      drop("vouchers", id);
       save(); renderAll();
       toast(`Voucher ${v.code} purged`);
     }
+    if (action === "show-setup") { ui.showSetup = true; showLogin(); return; }
     if (action === "seed") {
+      if (cloudMode()) return toast("Demo data is local-mode only — it would overwrite your cloud shop", "err");
       if (db.users.length || db.sales.length) {
         if (!(await confirmDlg("Replace ALL current data with the demo shop?"))) return;
       }
       await seedDemo();
     }
     if (action === "reset") {
+      if (cloudMode()) return toast("Disconnect from cloud mode before wiping local data", "err");
       if (!(await confirmDlg("Wipe every site, staff account, voucher, sale and payment? This cannot be undone."))) return;
       storage.removeItem(DB_KEY);
       storage.removeItem(LEGACY_KEY);
@@ -539,11 +681,36 @@ function wire() {
   });
 }
 
+// One-way import of this browser's local store into the cloud project.
+async function pushLocalToCloud() {
+  if (!cloudMode()) return toast("Connect to a Firebase project first", "err");
+  if (!isAdmin()) return toast("Administrators only", "err");
+  const local = readLocalStore();
+  if (!local) return toast("No local data to push", "err");
+  if (!(await confirmDlg(
+    `Push ${local.sales.length} sales, ${local.vouchers.length} vouchers and ${local.users.length} staff to ${Backend.config.projectId}? Existing cloud records with the same id are overwritten. Staff PINs cannot be moved — imported agents get a fresh PIN you reset from the Team page.`))) return;
+
+  const btn = $("#btn-cloud-push");
+  btn.disabled = true;
+  const original = btn.textContent;
+  try {
+    const report = await Backend.pushLocalData(local, (msg) => { btn.textContent = "⇪ " + msg; });
+    toast(`Pushed ${report.sales} sales · ${report.vouchers} vouchers · ${report.staff} new staff · ${report.payments} payments`);
+  } catch (e) {
+    toast(cloudError(e), "err");
+  } finally {
+    btn.textContent = original;
+    btn.disabled = false;
+    renderAll();
+  }
+}
+
 /* ------------------------------------------------------------
    Boot
    ------------------------------------------------------------ */
 (async function boot() {
   db = loadDb();
+  Backend.loadConfig();
   wire();
   tickClock();
   setInterval(tickClock, 1000);
@@ -554,6 +721,19 @@ function wire() {
 
   const params = new URLSearchParams(location.search);
   if (params.get("demo") === "1" && db.users.length === 0) await seedDemo();
+
+  // Cloud mode always re-authenticates on load: a stale local session must
+  // never stand in for a server-issued token.
+  if (typeof Backend !== "undefined" && Backend.enabled) {
+    try {
+      await Backend.connect();
+    } catch (e) {
+      toast(cloudError(e), "err");
+    }
+    clearSession();
+    showLogin();
+    return;
+  }
 
   session = loadSession();
   if (session) enterApp(); else showLogin();

@@ -93,9 +93,26 @@ const emptyDb = () => ({
 let db = emptyDb();
 let _rev = 0;
 
+const bumpRev = () => { _rev++; };
+const cloudMode = () => typeof Backend !== "undefined" && Backend.enabled && Backend.ready;
+
+// Every mutation routes through touch/drop. Local mode keeps writing the
+// whole store to localStorage; cloud mode writes the individual document
+// (queued durably by Firestore when offline).
+function touch(collection, obj) {
+  if (cloudMode()) Backend.put(collection, obj);
+}
+function drop(collection, id) {
+  if (cloudMode()) Backend.drop(collection, id);
+}
+// Ids must be allocated by whichever store owns them.
+function newId() {
+  return cloudMode() ? Backend.newId() : uid();
+}
+
 function save() {
   _rev++;
-  storage.setItem(DB_KEY, JSON.stringify(db));
+  if (!cloudMode()) storage.setItem(DB_KEY, JSON.stringify(db));
 }
 
 function loadDb() {
@@ -286,10 +303,11 @@ function findOrCreateAccount(name, phone, siteId) {
   const found = db.accounts.find((a) => a.siteId === siteId && accountKey(a.name, a.phone) === key);
   if (found) return found;
   const acc = {
-    id: uid(), name: String(name).trim(), phone: String(phone || "").trim(),
+    id: newId(), name: String(name).trim(), phone: String(phone || "").trim(),
     siteId, createdAt: new Date().toISOString(),
   };
   db.accounts.push(acc);
+  touch("accounts", acc);
   return acc;
 }
 
@@ -308,7 +326,7 @@ function recordPayment(accountId, amount, method, note, userId) {
   }
   const user = userById(userId);
   const payment = {
-    id: uid(), accountId,
+    id: newId(), accountId,
     amount: allocations.reduce((s, a) => s + a.amount, 0),
     method, note: String(note || "").trim(),
     receivedBy: userId, receivedByName: user ? user.name : "—",
@@ -316,6 +334,7 @@ function recordPayment(accountId, amount, method, note, userId) {
     allocations,
   };
   db.payments.push(payment);
+  touch("payments", payment);
   save();
   return payment;
 }

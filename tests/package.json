@@ -1,0 +1,13 @@
+{
+  "name": "nexus-pos-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:rules": "node rules.test.mjs",
+    "test:functions": "node functions.test.mjs"
+  },
+  "dependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^12.0.0"
+  }
+}

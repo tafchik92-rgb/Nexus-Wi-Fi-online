@@ -723,3 +723,7 @@ textarea.field { resize: vertical; }
 #setup-box .login-foot { text-align: left; }
 
 .nopin { color: var(--amber); font-weight: 700; letter-spacing: .08em; }
+
+/* Author display rules outrank the UA's [hidden] rule, so hidden buttons and
+   flex rows stayed visible. Restore hiding for every element. */
+[hidden] { display: none !important; }

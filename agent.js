@@ -19,13 +19,13 @@ function renderTerminal() {
 
   $("#pkg-cards").innerHTML = TYPE_ORDER.map((t) => {
     const conf = VTYPES[t];
-    const stock = stockOf(t, site);
+    const stock = cloudMode() ? Backend.heldFor(site, t).length : stockOf(t, site);
     const out = stock === 0;
     return `<button type="button" class="pkg ${ui.sale.type === t ? "is-selected" : ""}"
         data-vtype="${t}" ${out ? "disabled" : ""} role="radio" aria-checked="${ui.sale.type === t}">
       <p class="pkg-name"><i></i>${conf.label}</p>
       <p class="pkg-price">${conf.price > 0 ? money(conf.price) : "FREE"}</p>
-      <p class="pkg-stock">${out ? "◼ DEPLETED" : `◆ STOCK ${stock}`}</p>
+      <p class="pkg-stock">${out ? "◼ DEPLETED" : `◆ ${cloudMode() ? "READY" : "STOCK"} ${stock}`}</p>
     </button>`;
   }).join("");
 
@@ -34,6 +34,19 @@ function renderTerminal() {
 
   renderSummary();
   renderAgentLog();
+  if (cloudMode()) topUpReservations(site);
+}
+
+// Keep a working block of vouchers on this device for each group.
+let _topUpBusy = false;
+async function topUpReservations(siteId) {
+  if (_topUpBusy || !siteId || typeof Backend === "undefined" || Backend.status !== "online") return;
+  _topUpBusy = true;
+  try {
+    for (const t of TYPE_ORDER) {
+      if (Backend.heldFor(siteId, t).length < 5) await Backend.topUp(siteId, t, 15);
+    }
+  } finally { _topUpBusy = false; }
 }
 
 // Existing debt for whoever is being typed into the client fields.
@@ -115,10 +128,19 @@ function completeSale() {
   }
   if (problems.length) return toast("Cannot transmit — " + problems.join(", "), "err");
 
-  const voucher = db.vouchers
-    .filter((v) => v.type === ui.sale.type && v.status === "available" && v.siteId === site)
-    .sort((a, b) => a.uploadedAt.localeCompare(b.uploadedAt))[0];
-  if (!voucher) { renderAll(); return toast(`${VTYPES[ui.sale.type].label} stock depleted at ${siteName(site)}`, "err"); }
+  // Cloud mode sells only from the block this device reserved, so an offline
+  // till can never hand out a code another till has already sold.
+  const voucher = cloudMode()
+    ? Backend.takeHeld(site, ui.sale.type)
+    : db.vouchers
+        .filter((v) => v.type === ui.sale.type && v.status === "available" && v.siteId === site)
+        .sort((a, b) => a.uploadedAt.localeCompare(b.uploadedAt))[0];
+  if (!voucher) {
+    renderAll();
+    return toast(cloudMode()
+      ? `No ${VTYPES[ui.sale.type].label} reserved on this device — reconnect to draw more stock`
+      : `${VTYPES[ui.sale.type].label} stock depleted at ${siteName(site)}`, "err");
+  }
 
   const phone = $("#c-phone").value.trim();
   const price = VTYPES[voucher.type].price;
@@ -126,8 +148,9 @@ function completeSale() {
   const account = onCredit ? findOrCreateAccount(customer, phone, site) : null;
 
   voucher.status = "sold";
+  touch("vouchers", voucher);
   const sale = {
-    id: uid(), customer, phone,
+    id: newId(), customer, phone,
     accountId: account ? account.id : null,
     voucherId: voucher.id, voucherCode: voucher.code, type: voucher.type, price,
     pay: onCredit ? "credit" : "cash",
@@ -136,6 +159,7 @@ function completeSale() {
     soldAt: new Date().toISOString(),     // purchase date — auto-captured
   };
   db.sales.push(sale);
+  touch("sales", sale);
   save();
 
   $("#sale-code").textContent = sale.voucherCode;
@@ -357,10 +381,12 @@ async function closeMonth() {
   if (!(await confirmDlg(
     `Close ${fmtMonth(period)} for ${user.name}? Totals are frozen: ${money(r.totalCashCollected)} collected, ${money(r.unpaidFromPeriod)} outstanding.`))) return;
 
-  db.closings.push({
-    id: uid(), userId: user.id, userName: user.name, siteId: site, period,
+  const closing = {
+    id: newId(), userId: user.id, userName: user.name, siteId: site, period,
     generatedAt: new Date().toISOString(), totals: r,
-  });
+  };
+  db.closings.push(closing);
+  touch("closings", closing);
   save(); renderAll();
   toast(`${fmtMonth(period)} closed — ${money(r.totalCashCollected)} collected`);
 }

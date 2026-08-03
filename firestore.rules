@@ -1,0 +1,140 @@
+rules_version = '2';
+
+// ============================================================
+// NEXUS//POS — Firestore security rules
+//
+// These rules are the real authorization boundary. The client is
+// assumed hostile: role and site scope come from custom claims minted
+// by the signIn Cloud Function, never from anything the client sends.
+// PIN material lives in staffAuth/, which no client may read or write.
+// ============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function signedIn()  { return request.auth != null; }
+    function claims()    { return request.auth.token; }
+    function isAdmin()   { return signedIn() && claims().role == 'admin'; }
+    function isStaff()   { return signedIn() && (claims().role == 'admin' || claims().role == 'agent'); }
+    function uid()       { return request.auth.uid; }
+    function mySites()   { return claims().siteIds; }
+
+    // Admins reach every site; agents only the sites they are assigned.
+    function atMySite(siteId) {
+      return isAdmin() || (isStaff() && siteId in mySites());
+    }
+
+    function unchanged(field) {
+      return request.resource.data[field] == resource.data[field];
+    }
+
+    // Voucher prices are fixed by group — never taken from the client.
+    function priceFor(type) {
+      return type == 'V5' ? 5 : (type == 'V10' ? 10 : 0);
+    }
+
+    // ---------- staff PIN material: functions only ----------
+    // The Admin SDK bypasses rules, so Cloud Functions still reach this.
+    match /staffAuth/{staffId} {
+      allow read, write: if false;
+    }
+
+    // ---------- staff directory ----------
+    match /staff/{staffId} {
+      allow read: if isStaff();
+      // Creation and PIN changes go through Cloud Functions so that a
+      // client can never mint itself an admin or set its own PIN.
+      allow create: if false;
+      allow update: if isAdmin()
+                    && unchanged('code')
+                    && request.resource.data.role in ['admin', 'agent'];
+      allow delete: if isAdmin() && staffId != uid();
+    }
+
+    // ---------- sites ----------
+    match /sites/{siteId} {
+      allow read:   if isStaff();
+      allow create: if isAdmin() && request.resource.data.keys().hasAll(['name', 'code', 'status']);
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ---------- vouchers ----------
+    match /vouchers/{voucherId} {
+      allow read:   if atMySite(resource.data.siteId);
+      allow create: if isAdmin() && request.resource.data.status == 'available';
+
+      // Admins manage stock. An agent may only flip a voucher they hold a
+      // reservation on from available -> sold, at their own site, without
+      // rewriting its identity. Reservations themselves are issued by the
+      // reserveVouchers function, so a client cannot grant itself one.
+      allow update: if isAdmin()
+                    || (
+                      atMySite(resource.data.siteId)
+                      && resource.data.status == 'available'
+                      && request.resource.data.status == 'sold'
+                      && resource.data.reservedBy == uid()
+                      && unchanged('code') && unchanged('type') && unchanged('siteId')
+                    );
+
+      allow delete: if isAdmin() && resource.data.status == 'available';
+    }
+
+    // ---------- customer credit accounts ----------
+    match /accounts/{accountId} {
+      allow read:   if atMySite(resource.data.siteId);
+      allow create: if atMySite(request.resource.data.siteId)
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() > 0;
+      allow update: if atMySite(resource.data.siteId) && unchanged('siteId');
+      allow delete: if isAdmin();
+    }
+
+    // ---------- sales: an append-only ledger ----------
+    match /sales/{saleId} {
+      allow read: if atMySite(resource.data.siteId);
+
+      allow create: if atMySite(request.resource.data.siteId)
+                    // a sale is always booked to the staff member making it
+                    && request.resource.data.agentId == uid()
+                    && request.resource.data.type in ['V5', 'V10', 'REC']
+                    && request.resource.data.price == priceFor(request.resource.data.type)
+                    && request.resource.data.pay in ['cash', 'credit']
+                    // free vouchers can never be sold on credit
+                    && (request.resource.data.pay == 'cash' || request.resource.data.price > 0);
+
+      // Immutable once written — corrections are new records, not edits.
+      allow update, delete: if false;
+    }
+
+    // ---------- settlements: also append-only ----------
+    match /payments/{paymentId} {
+      allow read: if isStaff()
+                  && atMySite(get(/databases/$(database)/documents/accounts/$(resource.data.accountId)).data.siteId);
+
+      allow create: if isStaff()
+                    && request.resource.data.receivedBy == uid()
+                    && request.resource.data.amount is number
+                    && request.resource.data.amount > 0
+                    && request.resource.data.method in ['cash', 'mobile', 'bank']
+                    && atMySite(get(/databases/$(database)/documents/accounts/$(request.resource.data.accountId)).data.siteId);
+
+      allow update, delete: if false;
+    }
+
+    // ---------- month-end closings ----------
+    match /closings/{closingId} {
+      allow read:   if isAdmin() || (isStaff() && resource.data.userId == uid());
+      // An agent closes their own month; nobody rewrites a closed period.
+      allow create: if isStaff() && request.resource.data.userId == uid();
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // Anything not matched above is denied.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

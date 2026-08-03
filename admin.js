@@ -274,9 +274,19 @@ async function addUser(form) {
   if (db.users.some((u) => u.code === code)) return toast(`Code ${code} is already assigned`, "err");
   if (role === "agent" && siteIds.length === 0) return toast("Assign the agent to at least one site", "err");
 
-  const user = { id: uid(), name, code, role, salt: "", pinHash: "", siteIds, status: "active", createdAt: new Date().toISOString() };
+  if (cloudMode()) {
+    // The server owns credentials: it hashes the PIN and mints the record.
+    try {
+      await Backend.call("createStaff", { name, code, role, pin, siteIds });
+    } catch (e) { return toast(cloudError(e), "err"); }
+    form.reset(); renderAll();
+    return toast(`${role === "admin" ? "Administrator" : "Agent"} ${name} added as ${code}`);
+  }
+
+  const user = { id: newId(), name, code, role, salt: "", pinHash: "", siteIds, status: "active", createdAt: new Date().toISOString() };
   await setUserPin(user, pin);
   db.users.push(user);
+  touch("users", user);
   save(); renderAll();
   form.reset();
   toast(`${role === "admin" ? "Administrator" : "Agent"} ${name} added as ${code}`);
@@ -305,6 +315,7 @@ function renderSites() {
       <td class="num">${money(rev)}</td>
       <td class="num">${money(totalOutstanding(s.id))}</td>
       <td class="row-acts">
+        <button class="row-act accent" data-action="edit-site" data-id="${s.id}">RENAME</button>
         <button class="row-act" data-action="toggle-site" data-id="${s.id}">${s.status === "active" ? "CLOSE" : "REOPEN"}</button>
         ${canDelete ? `<button class="row-act danger" data-action="del-site" data-id="${s.id}">DELETE</button>` : ""}
       </td>
@@ -317,7 +328,9 @@ function addSite(form) {
   const code = $("#s-code").value.trim().toUpperCase();
   if (!name || !code) return toast("Site name and code are required", "err");
   if (db.sites.some((s) => s.code === code)) return toast(`Site code ${code} already exists`, "err");
-  db.sites.push({ id: uid(), name, code, status: "active", createdAt: new Date().toISOString() });
+  const site = { id: newId(), name, code, status: "active", createdAt: new Date().toISOString() };
+  db.sites.push(site);
+  touch("sites", site);
   save(); renderAll();
   form.reset();
   toast(`Site ${name} (${code}) opened`);
@@ -404,7 +417,9 @@ function addVoucherCodes(type, siteId, codes, batch, uploadedAt) {
     if (!code) continue;
     if (existing.has(code)) { skipped++; continue; }
     existing.add(code);
-    db.vouchers.push({ id: uid(), code, type, siteId, status: "available", batch, uploadedAt });
+    const v = { id: newId(), code, type, siteId, status: "available", batch, uploadedAt, reservedBy: null };
+    db.vouchers.push(v);
+    touch("vouchers", v);
     added++;
   }
   return { added, skipped };
@@ -626,4 +641,41 @@ function exportReportCSV() {
     o.totalCashCollected, o.creditIssued, o.unpaidFromPeriod, ""]);
   downloadCSV(`nexus-pos-report-${period}.csv`, rows);
   toast(`Exported the ${fmtMonth(period)} report`);
+}
+
+/* ------------------------------------------------------------
+   Cloud backend panel
+   ------------------------------------------------------------ */
+function renderCloud() {
+  const on = typeof Backend !== "undefined" && Backend.enabled;
+  const st = !on ? "LOCAL" : (typeof Backend !== "undefined" && Backend.ready ? Backend.status.toUpperCase() : "NOT CONNECTED");
+  const chip = !on ? "chip-off"
+    : (typeof Backend !== "undefined" && Backend.status === "online") ? "chip-ok"
+    : (typeof Backend !== "undefined" && Backend.status === "error") ? "chip-sold" : "chip-v10";
+
+  $("#cloud-status").innerHTML = `<span class="chip ${chip}"><i></i>${st}</span>` +
+    ((typeof Backend !== "undefined" && Backend.pending) ? ` <span class="chip chip-v10"><i></i>${Backend.pending} QUEUED</span>` : "") +
+    ((typeof Backend !== "undefined" && Backend.error) ? `<span class="cell-sub owed">${esc(Backend.error)}</span>` : "");
+
+  $("#cloud-summary").innerHTML = `
+    <div><dt>MODE</dt><dd>${on ? "CLOUD (Firebase)" : "LOCAL (this browser)"}</dd></div>
+    <div><dt>PROJECT</dt><dd>${on && typeof Backend !== "undefined" && Backend.config ? esc(Backend.config.projectId || "—") : "—"}</dd></div>
+    <div><dt>SIGNED IN AS</dt><dd>${esc((currentUser() || {}).name || "—")}</dd></div>
+    <div><dt>RECORDS HELD</dt><dd>${db.sites.length} sites · ${db.users.length} staff · ${db.vouchers.length} vouchers · ${db.sales.length} sales</dd></div>`;
+
+  $("#btn-cloud-disable").hidden = !on;
+  $("#btn-cloud-push").disabled = !cloudMode();
+  const local = readLocalStore();
+  $("#cloud-push-note").textContent = local
+    ? `Local store holds ${local.sites.length} sites · ${local.users.length} staff · ${local.vouchers.length} vouchers · ${local.sales.length} sales · ${local.payments.length} payments.`
+    : "No local data found in this browser.";
+}
+
+// The untouched localStorage copy, still there after switching to cloud mode.
+function readLocalStore() {
+  try {
+    const raw = storage.getItem(DB_KEY);
+    if (!raw) return null;
+    return normalizeDb(JSON.parse(raw));
+  } catch (_) { return null; }
 }

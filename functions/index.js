@@ -1,0 +1,285 @@
+/* ============================================================
+   NEXUS//POS — Cloud Functions
+   Everything the client must not be trusted with: PIN verification,
+   staff provisioning, role claims, and atomic voucher reservation.
+   ============================================================ */
+"use strict";
+
+const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { initializeApp } = require("firebase-admin/app");
+const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { getAuth } = require("firebase-admin/auth");
+const crypto = require("crypto");
+
+initializeApp();
+const dbf = () => getFirestore();
+
+/* ------------------------------------------------------------
+   PIN hashing — scrypt (Node built-in KDF, no dependency)
+   ------------------------------------------------------------ */
+const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 64 };
+
+function hashPin(pin, salt) {
+  return crypto.scryptSync(String(pin), salt, SCRYPT.keylen, {
+    N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p,
+  }).toString("hex");
+}
+
+function makePinRecord(pin) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  return { salt, hash: hashPin(pin, salt), algo: "scrypt", updatedAt: FieldValue.serverTimestamp() };
+}
+
+// Constant-time compare so a wrong PIN never leaks position via timing.
+function pinMatches(pin, record) {
+  if (!record || !record.hash || !record.salt) return false;
+  const candidate = Buffer.from(hashPin(pin, record.salt), "hex");
+  const stored = Buffer.from(record.hash, "hex");
+  return candidate.length === stored.length && crypto.timingSafeEqual(candidate, stored);
+}
+
+const validPin = (pin) => typeof pin === "string" && /^\d{4,8}$/.test(pin);
+const clean = (s, max = 60) => String(s == null ? "" : s).trim().slice(0, max);
+
+/* ------------------------------------------------------------
+   Lockout — blunt but effective against PIN guessing
+   ------------------------------------------------------------ */
+const MAX_ATTEMPTS = 5;
+const LOCK_MS = 5 * 60 * 1000;
+
+/* ------------------------------------------------------------
+   bootstrap — creates the founding administrator.
+   Only works while no staff exist, so it cannot be replayed.
+   ------------------------------------------------------------ */
+exports.bootstrap = onCall(async (req) => {
+  const db = dbf();
+  const name = clean(req.data && req.data.name);
+  const code = clean(req.data && req.data.code, 12).toUpperCase();
+  const pin = req.data && req.data.pin;
+  const siteName = clean(req.data && req.data.siteName, 50) || "Main Shop";
+
+  if (!name || !code) throw new HttpsError("invalid-argument", "Name and staff code are required.");
+  if (!validPin(pin)) throw new HttpsError("invalid-argument", "PIN must be 4–8 digits.");
+
+  const existing = await db.collection("staff").limit(1).get();
+  if (!existing.empty) {
+    throw new HttpsError("failed-precondition", "This shop is already set up. Ask an administrator for an account.");
+  }
+
+  const staffRef = db.collection("staff").doc();
+  const siteRef = db.collection("sites").doc();
+  const batch = db.batch();
+  batch.set(siteRef, {
+    name: siteName, code: "S-01", status: "active", createdAt: FieldValue.serverTimestamp(),
+  });
+  batch.set(staffRef, {
+    name, code, role: "admin", siteIds: [], status: "active", createdAt: FieldValue.serverTimestamp(),
+  });
+  batch.set(db.collection("staffAuth").doc(staffRef.id), makePinRecord(pin));
+  await batch.commit();
+
+  return { ok: true, staffId: staffRef.id, siteId: siteRef.id };
+});
+
+/* ------------------------------------------------------------
+   signIn — the only place a PIN is ever checked
+   ------------------------------------------------------------ */
+exports.signIn = onCall(async (req) => {
+  const db = dbf();
+  const code = clean(req.data && req.data.code, 12).toUpperCase();
+  const pin = req.data && req.data.pin;
+  if (!code || !pin) throw new HttpsError("invalid-argument", "Staff code and PIN are required.");
+
+  const snap = await db.collection("staff").where("code", "==", code).limit(1).get();
+  // Same message whether the code or the PIN was wrong — don't confirm codes.
+  const reject = () => new HttpsError("permission-denied", "Incorrect staff code or PIN.");
+  if (snap.empty) throw reject();
+
+  const staffDoc = snap.docs[0];
+  const staff = staffDoc.data();
+  if (staff.status !== "active") {
+    throw new HttpsError("permission-denied", "That account is suspended. Ask an administrator.");
+  }
+
+  const authRef = db.collection("staffAuth").doc(staffDoc.id);
+  const authSnap = await authRef.get();
+  const record = authSnap.exists ? authSnap.data() : null;
+  if (!record || !record.hash) {
+    throw new HttpsError("failed-precondition", "No PIN set for this account. An administrator must reset it.");
+  }
+
+  const now = Date.now();
+  const lockedUntil = record.lockedUntil ? record.lockedUntil.toMillis() : 0;
+  if (lockedUntil > now) {
+    const mins = Math.ceil((lockedUntil - now) / 60000);
+    throw new HttpsError("resource-exhausted", `Too many failed attempts. Try again in ${mins} minute(s).`);
+  }
+
+  if (!pinMatches(pin, record)) {
+    const failed = (record.failedAttempts || 0) + 1;
+    const update = { failedAttempts: failed, lastFailedAt: FieldValue.serverTimestamp() };
+    if (failed >= MAX_ATTEMPTS) {
+      update.lockedUntil = new Date(now + LOCK_MS);
+      update.failedAttempts = 0;
+    }
+    await authRef.set(update, { merge: true });
+    throw reject();
+  }
+
+  await authRef.set({ failedAttempts: 0, lockedUntil: null, lastLoginAt: FieldValue.serverTimestamp() }, { merge: true });
+
+  // Role and site scope travel in the token; the rules read them from there,
+  // so a client cannot widen its own access.
+  const token = await getAuth().createCustomToken(staffDoc.id, {
+    role: staff.role === "admin" ? "admin" : "agent",
+    siteIds: Array.isArray(staff.siteIds) ? staff.siteIds.slice(0, 40) : [],
+    code: staff.code,
+  });
+
+  return { token, staff: { id: staffDoc.id, name: staff.name, code: staff.code, role: staff.role, siteIds: staff.siteIds || [] } };
+});
+
+/* ------------------------------------------------------------
+   Staff provisioning (admin only)
+   ------------------------------------------------------------ */
+async function requireAdmin(req) {
+  if (!req.auth) throw new HttpsError("unauthenticated", "Sign in first.");
+  const db = dbf();
+  // Re-read the record rather than trusting the token's role claim, so a
+  // demoted admin loses access without waiting for their token to expire.
+  const doc = await db.collection("staff").doc(req.auth.uid).get();
+  if (!doc.exists || doc.data().role !== "admin" || doc.data().status !== "active") {
+    throw new HttpsError("permission-denied", "Administrators only.");
+  }
+  return doc;
+}
+
+exports.createStaff = onCall(async (req) => {
+  await requireAdmin(req);
+  const db = dbf();
+  const name = clean(req.data && req.data.name);
+  const code = clean(req.data && req.data.code, 12).toUpperCase();
+  const role = (req.data && req.data.role) === "admin" ? "admin" : "agent";
+  const pin = req.data && req.data.pin;
+  const siteIds = Array.isArray(req.data && req.data.siteIds) ? req.data.siteIds.slice(0, 40) : [];
+
+  if (!name || !code) throw new HttpsError("invalid-argument", "Name and staff code are required.");
+  if (!validPin(pin)) throw new HttpsError("invalid-argument", "PIN must be 4–8 digits.");
+  if (role === "agent" && siteIds.length === 0) {
+    throw new HttpsError("invalid-argument", "Assign the agent to at least one site.");
+  }
+
+  const clash = await db.collection("staff").where("code", "==", code).limit(1).get();
+  if (!clash.empty) throw new HttpsError("already-exists", `Code ${code} is already assigned.`);
+
+  const ref = db.collection("staff").doc();
+  await db.batch()
+    .set(ref, { name, code, role, siteIds, status: "active", createdAt: FieldValue.serverTimestamp() })
+    .set(db.collection("staffAuth").doc(ref.id), makePinRecord(pin))
+    .commit();
+
+  return { ok: true, staffId: ref.id };
+});
+
+// Change your own PIN — current PIN required.
+exports.changePin = onCall(async (req) => {
+  if (!req.auth) throw new HttpsError("unauthenticated", "Sign in first.");
+  const db = dbf();
+  const { currentPin, newPin } = req.data || {};
+  if (!validPin(newPin)) throw new HttpsError("invalid-argument", "New PIN must be 4–8 digits.");
+
+  const ref = db.collection("staffAuth").doc(req.auth.uid);
+  const snap = await ref.get();
+  if (snap.exists && snap.data().hash && !pinMatches(currentPin, snap.data())) {
+    throw new HttpsError("permission-denied", "Current PIN is incorrect.");
+  }
+  await ref.set(makePinRecord(newPin), { merge: true });
+  return { ok: true };
+});
+
+// Admin resets someone else's PIN; the generated PIN is returned once.
+exports.resetPin = onCall(async (req) => {
+  await requireAdmin(req);
+  const db = dbf();
+  const staffId = clean(req.data && req.data.staffId, 60);
+  if (!staffId) throw new HttpsError("invalid-argument", "staffId is required.");
+  const staff = await db.collection("staff").doc(staffId).get();
+  if (!staff.exists) throw new HttpsError("not-found", "No such staff member.");
+
+  const pin = String(crypto.randomInt(1000, 10000));
+  await db.collection("staffAuth").doc(staffId).set(
+    Object.assign(makePinRecord(pin), { failedAttempts: 0, lockedUntil: null }), { merge: true });
+  return { ok: true, pin };
+});
+
+/* ------------------------------------------------------------
+   reserveVouchers — how a till stays sellable offline.
+
+   A device claims a block of vouchers while it still has a connection;
+   the rules then let it sell only what it holds. Two tills can never be
+   handed the same code, so going offline cannot double-sell.
+   ------------------------------------------------------------ */
+exports.reserveVouchers = onCall(async (req) => {
+  if (!req.auth) throw new HttpsError("unauthenticated", "Sign in first.");
+  const db = dbf();
+  const uid = req.auth.uid;
+  const siteId = clean(req.data && req.data.siteId, 60);
+  const type = clean(req.data && req.data.type, 8);
+  const want = Math.min(Math.max(parseInt((req.data && req.data.count) || 10, 10) || 10, 1), 50);
+
+  if (!siteId || !["V5", "V10", "REC"].includes(type)) {
+    throw new HttpsError("invalid-argument", "siteId and a valid voucher type are required.");
+  }
+
+  const staff = await db.collection("staff").doc(uid).get();
+  if (!staff.exists || staff.data().status !== "active") {
+    throw new HttpsError("permission-denied", "Inactive account.");
+  }
+  const s = staff.data();
+  if (s.role !== "admin" && !(s.siteIds || []).includes(siteId)) {
+    throw new HttpsError("permission-denied", "You are not assigned to that site.");
+  }
+
+  // Anything already held by this device still counts toward the block.
+  const mine = await db.collection("vouchers")
+    .where("siteId", "==", siteId).where("type", "==", type)
+    .where("status", "==", "available").where("reservedBy", "==", uid)
+    .limit(want).get();
+
+  const shortfall = want - mine.size;
+  const reserved = mine.docs.map((d) => Object.assign({ id: d.id }, d.data()));
+  if (shortfall <= 0) return { ok: true, reserved: reserved.map(stripVoucher), claimed: 0 };
+
+  // Claim unheld stock in a transaction so concurrent tills can't overlap.
+  const claimed = await db.runTransaction(async (tx) => {
+    const free = await tx.get(db.collection("vouchers")
+      .where("siteId", "==", siteId).where("type", "==", type)
+      .where("status", "==", "available").where("reservedBy", "==", null)
+      .limit(shortfall));
+    const out = [];
+    free.docs.forEach((d) => {
+      tx.update(d.ref, { reservedBy: uid, reservedAt: FieldValue.serverTimestamp() });
+      out.push(Object.assign({ id: d.id }, d.data(), { reservedBy: uid }));
+    });
+    return out;
+  });
+
+  return { ok: true, reserved: reserved.concat(claimed).map(stripVoucher), claimed: claimed.length };
+});
+
+function stripVoucher(v) {
+  return { id: v.id, code: v.code, type: v.type, siteId: v.siteId, status: v.status, batch: v.batch || "", reservedBy: v.reservedBy || null };
+}
+
+// Hand unsold reservations back to the pool (sign-out, or shift change).
+exports.releaseReservations = onCall(async (req) => {
+  if (!req.auth) throw new HttpsError("unauthenticated", "Sign in first.");
+  const db = dbf();
+  const snap = await db.collection("vouchers")
+    .where("reservedBy", "==", req.auth.uid).where("status", "==", "available").limit(400).get();
+  if (snap.empty) return { ok: true, released: 0 };
+  const batch = db.batch();
+  snap.docs.forEach((d) => batch.update(d.ref, { reservedBy: null, reservedAt: null }));
+  await batch.commit();
+  return { ok: true, released: snap.size };
+});

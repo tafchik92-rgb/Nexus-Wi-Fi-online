@@ -19,15 +19,17 @@ Staff sign in with a **staff code + PIN**. Two roles:
 | Settle customer debts | ✅ | ✅ |
 | Month-end closing | all agents | own only |
 
-PINs are salted and hashed (SHA-256 via SubtleCrypto, with a non-cryptographic
-fallback where it is unavailable). **This is a UI-level role gate, not a security
-boundary** — the app is browser-only, so anyone with devtools can read or edit
-`localStorage`. Point `load`/`save` in `core.js` at a real backend if you need
-enforced authorization.
+In **local mode** this is a UI-level role gate, not a security boundary — the
+data lives in `localStorage`, so anyone with devtools can edit it. In **cloud
+mode** the same login is enforced server-side: the PIN is verified by a Cloud
+Function against a salted scrypt hash the browser can never read, and Firestore
+security rules enforce role and site scope. See **[BACKEND.md](BACKEND.md)**.
 
 ### Multi-location management
 Open any number of **sites**; vouchers, sales, staff assignments and credit
-accounts are all scoped per site. Voucher uploads (paste, generate, or file
+accounts are all scoped per site. Sites can be **renamed** at any time — records
+reference a site by id, so past sales, vouchers, credit accounts and closed
+reports all follow the new name. Voucher uploads (paste, generate, or file
 import) allocate stock to a chosen site — the same code may exist at two shops
 without colliding. Admins switch scope (or view **ALL SITES**) from the header;
 agents are locked to their assignment.
@@ -135,9 +137,27 @@ outstanding amount is always `price − allocated`.
   the stacked cash-flow chart carries a legend so color never encodes alone.
 - CSV exports quote every field and guard against formula injection.
 
+## ☁️ Cloud mode (Firebase)
+
+The app runs against a real backend when you want one — **Admin → CLOUD**, paste
+your Firebase web config, connect, then push this browser's data up. Full setup,
+deployment and cost notes are in **[BACKEND.md](BACKEND.md)**.
+
+- **Auth**: `signIn` Cloud Function checks the PIN (scrypt, salted, rate-limited
+  with a 5-attempt lockout) and mints a token carrying role + site claims.
+- **Authorization**: Firestore rules — cross-site reads denied, prices pinned to
+  the voucher group, sales and payments append-only, PIN material unreachable by
+  every client.
+- **Offline-first**: cached reads and queued writes keep the till trading. Each
+  device reserves a block of vouchers while online and can only sell what it
+  holds, so two offline tills can never issue the same code.
+- **Dual mode**: local mode is untouched and still the default.
+
+Tested against the Firebase emulators: 25 security-rules checks and 19
+server-side auth checks (`tests/`).
+
 ## ⚠️ Scope
 
-Front-end only: no server, no enforced authorization, and data lives in the
-browser profile that created it. Multiple tills do **not** share a ledger. To
-run a real multi-till shop, wire `load`/`save` in `core.js` to an API or a
-service like Firebase and move the role checks server-side.
+Local mode is front-end only: no server, no enforced authorization, and data
+lives in the browser profile that created it — multiple tills do **not** share a
+ledger. Switch to cloud mode for real multi-till operation.

@@ -129,6 +129,7 @@
           <button class="subtab" data-sub="sites">SITES</button>
           <button class="subtab" data-sub="credit">CREDIT</button>
           <button class="subtab" data-sub="reports">REPORTS</button>
+          <button class="subtab" data-sub="cloud">CLOUD</button>
         </nav>
 
         <!-- Dashboard -->
@@ -370,6 +371,41 @@
             <button class="btn btn-danger btn-xs" data-action="reset">RESET ALL DATA</button>
           </div>
         </div>
+
+        <!-- Cloud backend -->
+        <div id="sub-cloud" class="subview">
+          <div class="cols cols-form">
+            <section class="panel">
+              <header class="panel-head"><h2>FIREBASE PROJECT</h2></header>
+              <form id="cloud-form" class="stack" autocomplete="off">
+                <label class="lbl" for="cloud-config">WEB APP CONFIG <span class="dim">— Firebase console → Project settings → Your apps</span></label>
+                <textarea class="field mono" id="cloud-config" rows="9" placeholder='{
+  "apiKey": "…",
+  "authDomain": "your-app.firebaseapp.com",
+  "projectId": "your-app",
+  "storageBucket": "your-app.appspot.com",
+  "messagingSenderId": "…",
+  "appId": "…"
+}'></textarea>
+                <label class="check"><input type="checkbox" id="cloud-emulators" /> Use local emulators (development)</label>
+                <button class="btn btn-primary" type="submit">⇄ CONNECT</button>
+                <p class="hint">Deploy <b>firestore.rules</b> and the <b>functions/</b> directory first — see <b>BACKEND.md</b>. Authorization is enforced server-side; this config is public by design.</p>
+              </form>
+            </section>
+
+            <section class="panel">
+              <header class="panel-head"><h2>STATUS</h2><span id="cloud-status"></span></header>
+              <dl class="summary" id="cloud-summary"></dl>
+              <h3 class="mini-head">MIGRATE THIS BROWSER'S DATA</h3>
+              <p class="hint" id="cloud-push-note"></p>
+              <div class="gen-row">
+                <button class="btn btn-ghost" id="btn-cloud-push">⇪ PUSH LOCAL DATA TO CLOUD</button>
+                <button class="btn btn-danger btn-xs" id="btn-cloud-disable" hidden>DISCONNECT</button>
+              </div>
+              <p class="hint">Pushing is one-way and safe to repeat — records keep their ids, so a second push updates rather than duplicates. Staff PINs never leave this device; imported agents arrive with a fresh PIN for you to hand out.</p>
+            </section>
+          </div>
+        </div>
       </section>
 
       <!-- ========================= TERMINAL ========================= -->
@@ -543,6 +579,23 @@
     </div>
   </div>
 
+  <div class="modal" id="modal-site" hidden>
+    <div class="modal-box panel modal-narrow" role="dialog" aria-modal="true" aria-labelledby="site-edit-title">
+      <header class="panel-head"><h2 id="site-edit-title">✎ RENAME SITE</h2></header>
+      <div class="stack">
+        <label class="lbl" for="site-edit-name">SITE NAME</label>
+        <input class="field" id="site-edit-name" maxlength="50" />
+        <label class="lbl" for="site-edit-code">SITE CODE</label>
+        <input class="field mono" id="site-edit-code" maxlength="10" />
+      </div>
+      <p class="hint">Renaming updates this site everywhere — existing vouchers, sales, credit accounts and closed reports all stay attached to it.</p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="site-edit-cancel">CANCEL</button>
+        <button class="btn btn-primary" id="site-edit-save">SAVE</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="modal-pin" hidden>
     <div class="modal-box panel modal-narrow" role="dialog" aria-modal="true" aria-labelledby="pin-title">
       <header class="panel-head"><h2 id="pin-title">⚿ CHANGE PIN</h2></header>
@@ -574,6 +627,7 @@
   <div id="chart-tip" class="chart-tip" hidden></div>
 
   <script src="importer.js"></script>
+  <script src="backend.js"></script>
   <script src="core.js"></script>
   <script src="admin.js"></script>
   <script src="agent.js"></script>

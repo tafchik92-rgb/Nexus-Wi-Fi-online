@@ -1,0 +1,184 @@
+# NEXUS//POS — backend setup
+
+The app runs in two modes:
+
+| | **Local mode** (default) | **Cloud mode** |
+|---|---|---|
+| Data | `localStorage`, per browser | Firestore, shared by every till |
+| Auth | UI-level PIN gate in the browser | PIN verified by a Cloud Function |
+| Authorization | none enforced | Firestore security rules |
+| Offline | always (it never leaves the device) | yes — cached reads + queued writes |
+| Multi-till | no | yes |
+
+Local mode is unchanged and needs nothing. This guide sets up cloud mode.
+
+---
+
+## What the server actually enforces
+
+The browser is treated as hostile. Three things make that real:
+
+1. **PINs never leave the server.** `staffAuth/` holds a salted **scrypt** hash and
+   is unreadable and unwritable by *every* client — admins included. Only the
+   `signIn` function (Admin SDK) can check a PIN, and five wrong attempts lock
+   the account for five minutes.
+2. **Role and site scope live in the token.** `signIn` mints a custom token whose
+   claims carry `role` and `siteIds`. The rules read those claims, so a client
+   cannot widen its own access by editing anything locally.
+3. **The ledger is append-only.** Sales and payments cannot be edited or deleted
+   by anyone, prices are pinned to the voucher group in the rules, and a sale
+   must be booked to the staff member making it.
+
+---
+
+## 1. Create the Firebase project
+
+1. <https://console.firebase.google.com> → **Add project**.
+2. **Build → Firestore Database → Create database** (production mode; pick a
+   region close to your shops).
+3. **Build → Authentication → Get started** and enable **Anonymous**.
+   *(Custom-token sign-in needs the Auth service switched on; staff never see an
+   anonymous login — the app only uses server-minted tokens.)*
+4. **Project settings → Your apps → Web (`</>`)** → register an app → copy the
+   `firebaseConfig` object. You will paste it into the app in step 4.
+
+Cloud Functions require the **Blaze** (pay-as-you-go) plan. A shop of this size
+sits inside the free monthly allowance; set a budget alert if you want a cap.
+
+## 2. Install the tooling
+
+```bash
+npm install -g firebase-tools
+firebase login
+cd nexus-wifi-pos
+firebase use --add            # pick the project, alias it "default"
+cd functions && npm install && cd ..
+```
+
+## 3. Deploy rules, indexes and functions
+
+```bash
+firebase deploy --only firestore:rules,firestore:indexes,functions
+```
+
+Deploy the **rules before** letting staff in — an open database is the one
+mistake this whole design exists to prevent.
+
+Optionally host the app itself:
+
+```bash
+firebase deploy --only hosting
+```
+
+## 4. Connect the app
+
+Open the app → **Admin → CLOUD** → paste the `firebaseConfig` JSON → **CONNECT**.
+Then **SIGN OUT** and sign in again: from now on the PIN is checked by the server.
+
+A brand-new project has no staff, so the login screen offers **set up a new
+shop**, which calls `bootstrap` to create the founding administrator and first
+site. `bootstrap` refuses to run once any staff exist, so it cannot be replayed.
+
+## 5. Move your existing data across
+
+**Admin → CLOUD → PUSH LOCAL DATA TO CLOUD** uploads this browser's sites,
+vouchers, accounts, sales, payments and closings. Records keep their ids, so
+pushing twice updates rather than duplicates.
+
+**Staff PINs are deliberately not migrated** — the local hashes were never
+meant to leave the device. Imported agents arrive with a fresh random PIN;
+reset each from **Team → RESET PIN** and hand it out.
+
+---
+
+## Offline behaviour
+
+Firestore's persistent cache serves reads and queues writes while the link is
+down, so the till keeps trading. The hard part is vouchers: two offline tills
+must never hand out the same code.
+
+Each device **reserves a block** while it still has a connection
+(`reserveVouchers`, in a transaction, topping up to ~15 per group). Offline
+sales draw only from that block, and the rules only permit selling a voucher
+whose `reservedBy` matches the seller. Signing out returns unsold stock.
+
+The practical consequence: **a till can sell offline for as long as its reserved
+block lasts.** Reconnect to draw more. Raise the top-up count in `agent.js`
+(`topUpReservations`) if your outages are long.
+
+---
+
+## Tests
+
+Both suites run against the emulators — no cloud project, no cost.
+
+```bash
+# terminal 1
+firebase emulators:start --only firestore,functions,auth --project nexus-pos-fn-test
+
+# terminal 2
+cd tests && npm install
+node tests/rules.test.mjs          # 25 authorization checks
+node tests/functions.test.mjs      # 19 server-side auth checks
+```
+
+`rules.test.mjs` asserts the boundary: cross-site reads, forged sales, price
+tampering, ledger edits, self-granted reservations and PIN-material access are
+all denied. `functions.test.mjs` covers bootstrap replay, PIN storage, lockout,
+role checks and the disjointness of two tills' voucher blocks.
+
+---
+
+## Data model
+
+```
+sites/{id}       name, code, status, createdAt
+staff/{id}       name, code, role, siteIds[], status, createdAt
+staffAuth/{id}   salt, hash, algo, failedAttempts, lockedUntil    ← no client access
+vouchers/{id}    code, type, siteId, status, batch, uploadedAt, reservedBy
+accounts/{id}    name, phone, siteId, createdAt
+sales/{id}       customer, phone, accountId, voucherId, voucherCode, type,
+                 price, pay, agentId, agentName, siteId, soldAt      ← immutable
+payments/{id}    accountId, amount, method, note, receivedBy,
+                 receivedAt, allocations[{saleId, amount}]           ← immutable
+closings/{id}    userId, siteId, period, generatedAt, totals
+```
+
+Balances are never stored — a sale's outstanding amount is always
+`price − allocated`, derived from payment allocations.
+
+## Functions
+
+| Function | Who | Purpose |
+|---|---|---|
+| `bootstrap` | anyone, once | Founding admin + first site; refuses once staff exist |
+| `signIn` | anyone | Verifies the PIN, returns a custom token with role + site claims |
+| `createStaff` | admin | Creates staff and their PIN hash |
+| `changePin` | signed-in | Own PIN, current PIN required |
+| `resetPin` | admin | New random PIN, returned once |
+| `reserveVouchers` | staff | Atomically claims a block for this device |
+| `releaseReservations` | staff | Returns unsold stock to the pool |
+
+`createStaff`, `resetPin` and friends re-read the caller's record rather than
+trusting the token's role claim, so a demoted admin loses access immediately
+instead of when their token expires.
+
+---
+
+## Cost and limits
+
+- Firestore free tier: 50k reads / 20k writes per day. A shop doing a few
+  hundred sales a day sits well inside it.
+- The app subscribes to whole collections. Past roughly 50k documents, switch
+  the listeners in `backend.js` (`startSync`) to date-bounded queries.
+- No PII beyond customer name and phone. Both are visible to staff at that site
+  and to admins.
+
+## Limitations, stated plainly
+
+- **The web config is public.** That is normal for Firebase — it identifies the
+  project, it does not grant access. Security comes from rules and functions.
+- **Local mode has no authorization.** Anyone with devtools can edit
+  `localStorage`. Use cloud mode wherever that matters.
+- **Deleted sites and staff leave their records behind** (by design — the ledger
+  is immutable). Close a site rather than deleting it.
