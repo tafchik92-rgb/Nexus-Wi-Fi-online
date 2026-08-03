@@ -114,6 +114,58 @@ block lasts.** Reconnect to draw more. Raise the top-up count in `agent.js`
 
 ---
 
+## Automated deploys (recommended)
+
+`.github/workflows/firebase-deploy.yml` deploys on every push that touches the
+rules, indexes or functions — and **refuses to deploy unless both emulator
+suites pass first**, so a broken rule can never reach the live shop.
+
+Credentials stay in GitHub's secret store. Nobody pastes a key into a chat, an
+issue or a config file, and a service account scoped to this one project is far
+safer than a `firebase login:ci` token (which grants access to *every* project
+on your account).
+
+**One-time setup:**
+
+1. Create the service account and grant it only what deploying needs:
+
+   ```bash
+   PROJECT=your-firebase-project-id
+
+   gcloud iam service-accounts create nexus-pos-deployer \
+     --display-name="NEXUS//POS CI deployer" --project "$PROJECT"
+
+   SA="nexus-pos-deployer@$PROJECT.iam.gserviceaccount.com"
+   for ROLE in roles/firebaserules.admin roles/cloudfunctions.admin \
+               roles/firebasehosting.admin roles/iam.serviceAccountUser \
+               roles/artifactregistry.admin roles/serviceusage.serviceUsageConsumer \
+               roles/datastore.indexAdmin; do
+     gcloud projects add-iam-policy-binding "$PROJECT" \
+       --member="serviceAccount:$SA" --role="$ROLE" --condition=None
+   done
+
+   gcloud iam service-accounts keys create key.json \
+     --iam-account "$SA" --project "$PROJECT"
+   ```
+
+   *(No `gcloud`? Firebase console → Project settings → Service accounts →
+   Generate new private key gives you an equivalent `key.json`.)*
+
+2. In GitHub → **Settings → Secrets and variables → Actions**:
+   - **Secrets → New repository secret** → name `FIREBASE_SERVICE_ACCOUNT`,
+     value = the entire contents of `key.json`.
+   - **Variables → New repository variable** → name `FIREBASE_PROJECT_ID`,
+     value = your project id.
+
+3. **Delete `key.json` from your machine** — GitHub now holds the only copy.
+   Rotate it from the console if it is ever exposed.
+
+Then push, or run **Actions → Deploy to Firebase → Run workflow** to deploy on
+demand. The workflow uses a `production` environment, so adding required
+reviewers there gives you a manual approval gate.
+
+---
+
 ## Tests
 
 Both suites run against the emulators — no cloud project, no cost.

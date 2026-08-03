@@ -1,0 +1,85 @@
+# Deploys the NEXUS//POS backend to Firebase.
+#
+# Credentials never appear in this file, in the repo, or in any chat: the
+# workflow reads a service-account key from the FIREBASE_SERVICE_ACCOUNT
+# repository secret, which only you can set. See BACKEND.md § Automated deploys.
+name: Deploy to Firebase
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'firestore.rules'
+      - 'firestore.indexes.json'
+      - 'functions/**'
+      - 'firebase.json'
+      - '.github/workflows/firebase-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: 'What to deploy'
+        required: true
+        default: 'firestore:rules,firestore:indexes,functions'
+        type: choice
+        options:
+          - 'firestore:rules,firestore:indexes,functions'
+          - 'firestore:rules,firestore:indexes'
+          - 'functions'
+          - 'hosting'
+
+jobs:
+  # The rules are the authorization boundary — never ship them untested.
+  verify:
+    name: Test rules and functions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install
+        run: |
+          npm install --no-audit --no-fund
+          npm install --no-audit --no-fund --prefix functions
+          npm install --no-audit --no-fund --prefix tests
+
+      - name: Run the suites against the emulators
+        run: |
+          npx firebase-tools emulators:exec \
+            --only firestore,functions,auth \
+            --project nexus-pos-ci \
+            "node tests/rules.test.mjs && node tests/functions.test.mjs"
+
+  deploy:
+    name: Deploy
+    needs: verify
+    runs-on: ubuntu-latest
+    # Add a "production" environment with required reviewers if you want a
+    # manual approval gate before anything reaches the live shop.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install function dependencies
+        run: npm install --no-audit --no-fund --prefix functions
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Deploy
+        run: |
+          npx firebase-tools deploy \
+            --only "${{ github.event.inputs.targets || 'firestore:rules,firestore:indexes,functions' }}" \
+            --project "${{ vars.FIREBASE_PROJECT_ID }}" \
+            --non-interactive \
+            --force
