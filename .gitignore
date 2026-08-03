@@ -7,3 +7,8 @@ coverage/
 .env*
 !.env.example
 package-lock.json
+
+# AI Studio regenerates an unused React scaffold in its workspace; ignoring it
+# stops the app you deleted from being committed back on every AI Studio sync.
+# index.html loads the NEXUS//POS scripts directly and never references src/.
+src/
