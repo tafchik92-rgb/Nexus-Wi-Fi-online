@@ -1,0 +1,5 @@
+{
+  "name": "NEXUS//POS — Wi-Fi Shop Point-of-Sale",
+  "description": "Futuristic point-of-sale for a Wi-Fi voucher shop: admin dashboard with sales records and CSV export, agent management, bulk voucher uploads ($5 / $10 / Reconciliation bundles), and a streamlined sales agent terminal with automatic purchase-date capture. Zero-dependency static web app; data persists in localStorage.",
+  "requestFramePermissions": []
+}
