@@ -78,7 +78,17 @@ output; leave it at `.` if you deploy the plain static files as-is.
 
 ## 4. Connect the app
 
-Open the app → **Admin → CLOUD** → paste the `firebaseConfig` JSON → **CONNECT**.
+Two ways:
+
+- **Per device:** Admin → **CLOUD** → paste the `firebaseConfig` JSON → **CONNECT**.
+- **For every device at once:** fill in **`firebase-config.js`** and redeploy. The
+  config is then pre-filled in the CLOUD panel; set `autoConnect: true` in that
+  file once the rules and functions are live and tills connect on load.
+
+Do **not** hand-add a `<script type="module">` Firebase snippet to `index.html`.
+`backend.js` initializes the SDK itself — with the offline cache, emulator
+wiring and auth the POS needs — and a module's `import` is scoped away from the
+app's other scripts, which share globals.
 Then **SIGN OUT** and sign in again: from now on the PIN is checked by the server.
 
 A brand-new project has no staff, so the login screen offers **set up a new

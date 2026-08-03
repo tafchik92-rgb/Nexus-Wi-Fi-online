@@ -41,14 +41,28 @@ const Backend = {
 
   /* ---------------- config ---------------- */
   loadConfig() {
+    let saved = null;
     try {
       const raw = storage.getItem(CLOUD_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      this.config = parsed.config || null;
-      this.enabled = !!parsed.enabled;
+      if (raw) saved = JSON.parse(raw);
+    } catch (_) { /* unreadable store — fall through to the defaults */ }
+
+    if (saved && saved.config) {
+      this.config = saved.config;
+      this.enabled = !!saved.enabled;
       return this.config;
-    } catch (_) { return null; }
+    }
+
+    // No local choice yet: adopt firebase-config.js if it is filled in.
+    // Only autoConnect turns cloud mode on by itself, so an undeployed
+    // backend cannot strand staff at a login they can never pass.
+    const preset = typeof window !== "undefined" ? window.NEXUS_FIREBASE_CONFIG : null;
+    if (preset && preset.apiKey && preset.projectId) {
+      this.config = preset;
+      this.enabled = !!preset.autoConnect;
+      return this.config;
+    }
+    return null;
   },
   saveConfig(config, enabled) {
     this.config = config;

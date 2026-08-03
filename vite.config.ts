@@ -6,6 +6,7 @@ import {defineConfig} from 'vite';
 // cannot bundle them and drops them from the build. Copy them into dist
 // verbatim, otherwise the built page loads no JavaScript at all.
 const STATIC_SCRIPTS = [
+  'firebase-config.js',
   'importer.js', 'backend.js', 'core.js', 'admin.js', 'agent.js', 'app.js',
 ];
 

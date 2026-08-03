@@ -725,14 +725,18 @@ async function pushLocalToCloud() {
   // Cloud mode always re-authenticates on load: a stale local session must
   // never stand in for a server-issued token.
   if (typeof Backend !== "undefined" && Backend.enabled) {
+    clearSession();
     try {
       await Backend.connect();
+      showLogin();
+      return;
     } catch (e) {
-      toast(cloudError(e), "err");
+      // Unreachable backend must not become a login nobody can pass —
+      // drop back to local mode and say why.
+      Backend.enabled = false;
+      Backend.ready = false;
+      toast(`Cloud unavailable — working locally. ${cloudError(e)}`, "err");
     }
-    clearSession();
-    showLogin();
-    return;
   }
 
   session = loadSession();

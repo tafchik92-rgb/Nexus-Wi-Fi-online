@@ -663,6 +663,13 @@ function renderCloud() {
     <div><dt>SIGNED IN AS</dt><dd>${esc((currentUser() || {}).name || "—")}</dd></div>
     <div><dt>RECORDS HELD</dt><dd>${db.sites.length} sites · ${db.users.length} staff · ${db.vouchers.length} vouchers · ${db.sales.length} sales</dd></div>`;
 
+  const box = $("#cloud-config");
+  if (box && !box.value.trim() && typeof Backend !== "undefined" && Backend.config) {
+    const shown = Object.assign({}, Backend.config);
+    delete shown.autoConnect;
+    delete shown.useEmulators;
+    box.value = JSON.stringify(shown, null, 2);
+  }
   $("#btn-cloud-disable").hidden = !on;
   $("#btn-cloud-push").disabled = !cloudMode();
   const local = readLocalStore();
