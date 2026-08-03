@@ -64,11 +64,17 @@ firebase deploy --only firestore:rules,firestore:indexes,functions
 Deploy the **rules before** letting staff in — an open database is the one
 mistake this whole design exists to prevent.
 
-Optionally host the app itself:
+Optionally host the app itself. This repo is also an AI Studio / Vite project,
+so build first and deploy `dist/`:
 
 ```bash
+npm install
+npm run build          # copies the plain scripts into dist/ (see vite.config.ts)
 firebase deploy --only hosting
 ```
+
+Point `hosting.public` in `firebase.json` at `dist` if you deploy the built
+output; leave it at `.` if you deploy the plain static files as-is.
 
 ## 4. Connect the app
 
