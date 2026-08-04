@@ -116,7 +116,7 @@ voucher { id, code, type: "V5"|"V10"|"REC", siteId, status, batch, uploadedAt, s
 account { id, name, phone, siteId, createdAt }
 sale    { id, customer, phone, accountId, voucherId, voucherCode, type, price,
           pay: "cash"|"credit", agentId, agentName, siteId, soldAt /* auto */ }
-payment { id, accountId, amount, method, note, receivedBy, receivedAt,
+payment { id, accountId, siteId, amount, method, note, receivedBy, receivedAt,
           allocations: [{ saleId, amount }] }
 closing { id, userId, siteId, period: "YYYY-MM", generatedAt, totals }
 ```
@@ -192,9 +192,15 @@ edits do queue and sync later, because a payment races with nothing.
 - **Migration**: a till that traded on an older device-only build can push its
   history up from **Admin → CLOUD**.
 
-Tested against the Firebase emulators: **29 security-rules checks** and **21
+- **Scoped sync**: an agent's listeners are narrowed to their own sites, which
+  is what the rules allow. An unscoped listen is refused outright, and
+  Firestore would then serve the previous user's cached documents — so signing
+  out clears the cache too.
+
+Tested against the Firebase emulators: **35 security-rules checks** and **21
 server-side auth and selling checks** (`tests/`), including claiming a whole
-pool of vouchers and asserting every code came out exactly once.
+pool of vouchers and asserting every code came out exactly once, and that an
+agent can read their own site's settlements but not a neighbouring site's.
 
 ## ⚠️ Scope
 

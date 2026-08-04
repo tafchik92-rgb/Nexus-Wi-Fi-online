@@ -284,8 +284,15 @@ function recordPayment(accountId, amount, method, note, userId) {
     remaining -= pay;
   }
   const user = userById(userId);
+  const account = accountById(accountId);
   const payment = {
     id: newId(), accountId,
+    // The account's site, copied onto the payment. A settlement is only
+    // readable by staff at that site, and a rule that had to look the account
+    // up could be checked one document at a time but never for a query — so
+    // agents could not list settlements at all, and their customers' balances
+    // came out wrong. Carrying the site here makes the query expressible.
+    siteId: account ? account.siteId : "",
     amount: allocations.reduce((s, a) => s + a.amount, 0),
     method, note: String(note || "").trim(),
     receivedBy: userId, receivedByName: user ? user.name : "—",

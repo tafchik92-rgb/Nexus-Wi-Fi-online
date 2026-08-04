@@ -247,9 +247,15 @@ const Backend = {
   },
 
   // Everything that reads or writes the database goes through here first, so
-  // the deferred Firestore load is invisible to callers.
+  // the deferred Firestore load — and the teardown that signing out performs —
+  // are both invisible to callers.
   async ensureStore() {
     if (this.db) return this.sdk.store;
+    // Signing out terminates the client to clear its cache; the next sign-in
+    // builds a fresh one from the module we already have.
+    if (!this._storeReady && this.sdk && this.sdk.store) {
+      this._storeReady = Promise.resolve(this._initStore(this.sdk.store));
+    }
     if (!this._storeReady) throw new Error("Not connected to the shop.");
     try {
       return await this._storeReady;
@@ -293,25 +299,110 @@ const Backend = {
   async signOut() {
     this.stopSync();
     this.uid = null;
+
+    // Wipe the local cache with the session. Firestore caches per database,
+    // not per user, so on a shared till the next person to sign in was being
+    // served the previous one's documents — including sites they have no
+    // right to see, which the server had already refused them.
+    const { store } = this.sdk || {};
+    if (store && this.db) {
+      const stale = this.db;
+      this.db = null;
+      this._storeReady = null;
+      try {
+        await store.terminate(stale);
+        await store.clearIndexedDbPersistence(stale);
+      } catch (_) {
+        // memory cache, or another tab still holding it — nothing to purge
+      }
+    }
+
     if (this.auth) await this.sdk.auth.signOut(this.auth);
   },
 
   /* ---------------- sync ---------------- */
-  // Mirrors every collection into `db` and re-renders on change.
+  // Which queries this staff member is actually allowed to run.
   //
-  // This is the gate the deferred Firestore load sits behind: nothing reads or
-  // writes the database before sync starts, so awaiting the module here covers
-  // put, drop, newId and the rest without making them all async.
+  // Listening to a whole collection only works if every document in it is
+  // readable. An admin can do that; an agent cannot, and the moment a second
+  // site existed their listeners were refused wholesale — the app showed
+  // SYNC ERROR and then quietly served whatever the previous user had left in
+  // the local cache. So the queries are scoped to match the rules exactly,
+  // using the same claims the rules read.
+  syncPlan(role, mySites, uid) {
+    const { store } = this.sdk;
+    const plan = [];
+    const add = (key, constraints) => plan.push({ key, coll: COLLECTIONS[key], constraints });
+
+    if (role === "admin") {
+      for (const key of Object.keys(COLLECTIONS)) add(key, []);
+      return plan;
+    }
+
+    // Readable by any signed-in staff member, so no scoping needed.
+    add("sites", []);
+    add("users", []);
+
+    // "in" takes at most 30 values; chunk so a widely-assigned agent still works.
+    const chunks = [];
+    for (let i = 0; i < mySites.length; i += 30) chunks.push(mySites.slice(i, i + 30));
+    for (const key of ["vouchers", "accounts", "sales", "payments"]) {
+      for (const chunk of chunks) add(key, [store.where("siteId", "in", chunk)]);
+    }
+    // An agent reads only their own closed months.
+    add("closings", [store.where("userId", "==", uid)]);
+    return plan;
+  },
+
+  // Mirrors the readable slice of every collection into `db` and re-renders on
+  // change. This is also the gate the deferred Firestore load sits behind:
+  // nothing reads or writes before sync starts, so awaiting the module here
+  // covers put, drop, newId and the rest without making them all async.
   async startSync(onChange) {
     const store = await this.ensureStore();
     this.stopSync();
+
+    const user = this.auth && this.auth.currentUser;
+    if (!user) throw new Error("Not signed in.");
+    // Take role and site scope from the token, not from any local record:
+    // these are the very claims the security rules evaluate, so a query built
+    // from them cannot ask for more than the rules will grant.
+    const tok = await this.sdk.auth.getIdTokenResult(user);
+    const role = tok.claims.role === "admin" ? "admin" : "agent";
+    const mySites = Array.isArray(tok.claims.siteIds) ? tok.claims.siteIds : [];
+
+    const plan = this.syncPlan(role, mySites, user.uid);
+    // An agent with no site assignment has nothing site-scoped to read; leave
+    // those collections empty rather than sending a query Firestore rejects.
+    const streams = plan.filter((s) => !s.constraints.some((c) => c === null));
+
+    // Several streams can feed one collection (one per site chunk), so each
+    // keeps its own bucket and `db[key]` is the union.
+    const buckets = new Map();
+    for (const key of Object.keys(COLLECTIONS)) db[key] = [];
+
+    const merge = (key) => {
+      const seen = new Map();
+      for (const [id, rows] of buckets) {
+        if (!id.startsWith(key + "#")) continue;
+        for (const row of rows) seen.set(row.id, row);
+      }
+      db[key] = [...seen.values()];
+    };
+
     let firstPass = 0;
-    const total = Object.keys(COLLECTIONS).length;
+    const total = streams.length;
+    if (!total) return;
 
     return new Promise((resolve) => {
-      for (const [key, coll] of Object.entries(COLLECTIONS)) {
-        const un = store.onSnapshot(store.collection(this.db, coll), (snap) => {
-          db[key] = snap.docs.map((d) => Object.assign({ id: d.id }, plainDoc(d.data())));
+      streams.forEach((s, i) => {
+        const bucketId = `${s.key}#${i}`;
+        const q = s.constraints.length
+          ? store.query(store.collection(this.db, s.coll), ...s.constraints)
+          : store.collection(this.db, s.coll);
+        const un = store.onSnapshot(q, (snap) => {
+          buckets.set(bucketId, snap.docs.map((d) => Object.assign({ id: d.id }, plainDoc(d.data()))));
+          merge(s.key);
           this.pending = snap.docs.filter((d) => d.metadata.hasPendingWrites).length;
           this.status = snap.metadata.fromCache && this.pending > 0 ? "offline" : "online";
           bumpRev();
@@ -319,12 +410,12 @@ const Backend = {
           if (onChange) onChange();
         }, (err) => {
           this.status = "error";
-          this.error = err.message;
+          this.error = `${s.coll}: ${err.message}`;
           if (++firstPass >= total) resolve();
           if (onChange) onChange();
         });
         this.unsubs.push(un);
-      }
+      });
     });
   },
 
@@ -353,6 +444,16 @@ const Backend = {
     store.setDoc(store.doc(this.db, coll, obj.id), data, { merge: true })
       .catch((e) => toast(`Sync rejected: ${e.message}`, "err"));
     return Promise.resolve();
+  },
+
+  // A targeted field write that must report whether the server accepted it —
+  // unlike put, which fires and forgets. Used by the settlement repair, where
+  // silently failing would leave the operator thinking it worked.
+  async update(key, id, fields) {
+    const store = this.ready4store();
+    const coll = COLLECTIONS[key];
+    if (!coll) throw new Error("Unknown collection: " + key);
+    await store.updateDoc(store.doc(this.db, coll, id), fields);
   },
 
   drop(key, id) {

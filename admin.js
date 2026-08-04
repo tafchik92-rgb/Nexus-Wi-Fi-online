@@ -662,11 +662,58 @@ function renderCloud() {
   const warn = $("#cloud-emu-warn");
   if (emuBox && warn) warn.hidden = !emuBox.checked;
   $("#btn-cloud-diag").disabled = !(Backend.config || (typeof window !== "undefined" && window.NEXUS_FIREBASE_CONFIG));
+
+  // Settlements recorded before payments carried their site are invisible to
+  // agents, who can only query by site — and a balance missing a payment tells
+  // them a customer still owes money they have already handed over.
+  const orphans = paymentsMissingSite();
+  const repair = $("#cloud-repair");
+  if (repair) {
+    repair.hidden = orphans.length === 0;
+    $("#cloud-repair-note").textContent =
+      `${orphans.length} settlement${orphans.length === 1 ? "" : "s"} recorded before this version do not carry a site, so agents cannot see them.`;
+  }
   const local = readLocalStore();
   $("#btn-cloud-push").disabled = !cloudMode() || !local;
   $("#cloud-push-note").textContent = local
     ? `This browser still holds an older device-only store: ${local.sites.length} sites · ${local.users.length} staff · ${local.vouchers.length} vouchers · ${local.sales.length} sales · ${local.payments.length} payments.`
     : "Nothing to import — this browser has no records from the older device-only version.";
+}
+
+// Settlements written before payments carried their account's site.
+const paymentsMissingSite = () => db.payments.filter((p) => !p.siteId);
+
+// Stamps the site onto those records. Payments are immutable by rule, with a
+// single exception for exactly this: an admin adding the missing siteId, and
+// only where it matches the account the payment already points at.
+async function repairPaymentSites() {
+  if (!isAdmin()) return toast("Administrators only", "err");
+  const orphans = paymentsMissingSite();
+  if (!orphans.length) return toast("Every settlement already carries its site");
+
+  const fixable = orphans.filter((p) => accountById(p.accountId));
+  if (!fixable.length) {
+    return toast(`${orphans.length} settlement(s) reference accounts this till cannot see — sign in as an administrator with access to every site`, "err");
+  }
+  if (!(await confirmDlg(
+    `Stamp the site onto ${fixable.length} older settlement(s)? Agents cannot see them until you do, which makes their customers look like they still owe the money. Nothing else about the records changes.`))) return;
+
+  const btn = $("#btn-cloud-repair");
+  btn.disabled = true;
+  let done = 0, failed = 0;
+  for (const p of fixable) {
+    const acc = accountById(p.accountId);
+    try {
+      await Backend.update("payments", p.id, { siteId: acc.siteId });
+      p.siteId = acc.siteId;
+      done++;
+    } catch (e) { failed++; }
+  }
+  btn.disabled = false;
+  save(); renderAll();
+  toast(failed
+    ? `${done} settlement(s) repaired · ${failed} refused — check you administer those sites`
+    : `${done} settlement(s) repaired — agents can see them now`, failed ? "err" : "ok");
 }
 
 // Whatever an older, device-only version of the app left in this browser.

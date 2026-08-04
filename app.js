@@ -185,13 +185,16 @@ async function runDiagnostics() {
   }
 }
 
-function logout() {
-  if (Backend.ready) Backend.signOut().catch(() => {});
+async function logout() {
   db = emptyDb();                 // don't leave one shift's records on screen
   clearSession();
   ui.sale = { type: null, pay: "cash" };
   ui.showSetup = false;
   showLogin();
+  // Awaited, not fired and forgotten: signing out purges the cached documents,
+  // and the next sign-in must not race a half-finished teardown — that is how
+  // the previous user's records would survive into the next shift.
+  if (Backend.ready) await Backend.signOut().catch(() => {});
 }
 
 /* ------------------------------------------------------------
@@ -215,9 +218,21 @@ function enterApp() {
   if (!admin && (ui.tab === "admin")) ui.tab = "terminal";
   if (admin && !["admin", "terminal"].includes(ui.tab)) ui.tab = "admin";
 
-  // site scope
+  renderSiteScope();
+  setTab(ui.tab, ui.sub);
+}
+
+// The header's site picker. This lives in renderAll, not just enterApp:
+// opening a site used to leave it missing from this list until the operator
+// signed out and back in, so a shop could be stocked at a site nobody could
+// then switch the till to.
+function renderSiteScope() {
+  const user = currentUser();
+  if (!user) return;
+  const admin = isAdmin();
   const sel = $("#site-scope");
   const sites = sitesForUser(user);
+
   sel.innerHTML = (admin ? `<option value="">ALL SITES</option>` : "") +
     sites.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
   // A remembered scope can point at a site that has since been deleted, or
@@ -232,8 +247,6 @@ function enterApp() {
   }
   sel.value = session.siteId || "";
   sel.disabled = sites.length <= 1 && !admin;
-
-  setTab(ui.tab, ui.sub);
 }
 
 function setTab(tab, sub) {
@@ -270,6 +283,7 @@ function routeFromHash() {
 function renderAll() {
   if (!session) return;
   renderModeChip();
+  renderSiteScope();
   if (isAdmin()) {
     renderTiles();
     renderChart();
@@ -466,6 +480,7 @@ function wire() {
     location.reload();
   });
   $("#btn-cloud-push").addEventListener("click", pushLocalToCloud);
+  $("#btn-cloud-repair").addEventListener("click", repairPaymentSites);
   $("#cloud-emulators").addEventListener("change", (e) => {
     $("#cloud-emu-warn").hidden = !e.target.checked;
   });

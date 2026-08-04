@@ -840,3 +840,12 @@ html { overflow-x: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .boot-bar i { animation: none; width: 100%; opacity: .5; }
 }
+
+/* Shown in place of the package cards when the till has no single site to
+   sell from — an admin viewing ALL SITES, or an agent with no assignment. */
+.pkg-hint {
+  grid-column: 1 / -1; margin: 0; padding: 18px 20px;
+  font-size: 12.5px; line-height: 1.6; color: var(--ink-2);
+  background: rgba(255, 176, 58, .07); border-left: 3px solid var(--amber);
+}
+.pkg-hint b { color: var(--amber); }

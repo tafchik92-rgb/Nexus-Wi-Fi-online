@@ -108,18 +108,36 @@ service cloud.firestore {
     }
 
     // ---------- settlements: also append-only ----------
+    // A payment carries its account's siteId. Looking the account up instead
+    // could be checked for a single document but never for a query, so agents
+    // could not list settlements at all — and a balance computed without them
+    // shows a customer still owing money they have already paid.
     match /payments/{paymentId} {
-      allow read: if isStaff()
-                  && atMySite(get(/databases/$(database)/documents/accounts/$(resource.data.accountId)).data.siteId);
+      allow read: if isStaff() && (
+                    atMySite(resource.data.siteId)
+                    // records written before siteId was carried here
+                    || (!('siteId' in resource.data)
+                        && atMySite(get(/databases/$(database)/documents/accounts/$(resource.data.accountId)).data.siteId))
+                  );
 
       allow create: if isStaff()
                     && request.resource.data.receivedBy == uid()
                     && request.resource.data.amount is number
                     && request.resource.data.amount > 0
                     && request.resource.data.method in ['cash', 'mobile', 'bank']
-                    && atMySite(get(/databases/$(database)/documents/accounts/$(request.resource.data.accountId)).data.siteId);
+                    && atMySite(request.resource.data.siteId)
+                    // the stamped site must be the account's own
+                    && request.resource.data.siteId ==
+                       get(/databases/$(database)/documents/accounts/$(request.resource.data.accountId)).data.siteId;
 
-      allow update, delete: if false;
+      // Immutable, with one exception: an admin may stamp the site onto an
+      // older record that predates the field. Nothing else may change.
+      allow update: if isAdmin()
+                    && !('siteId' in resource.data)
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['siteId'])
+                    && request.resource.data.siteId ==
+                       get(/databases/$(database)/documents/accounts/$(resource.data.accountId)).data.siteId;
+      allow delete: if false;
     }
 
     // ---------- month-end closings ----------

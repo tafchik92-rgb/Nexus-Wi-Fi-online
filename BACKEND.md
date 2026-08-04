@@ -258,13 +258,38 @@ vouchers/{id}    code, type, siteId, status, batch, uploadedAt, soldAt
 accounts/{id}    name, phone, siteId, createdAt
 sales/{id}       customer, phone, accountId, voucherId, voucherCode, type,
                  price, pay, agentId, agentName, siteId, soldAt      ← immutable
-payments/{id}    accountId, amount, method, note, receivedBy,
+payments/{id}    accountId, siteId, amount, method, note, receivedBy,
                  receivedAt, allocations[{saleId, amount}]           ← immutable
 closings/{id}    userId, siteId, period, generatedAt, totals
 ```
 
 Balances are never stored — a sale's outstanding amount is always
 `price − allocated`, derived from payment allocations.
+
+`payments.siteId` is a copy of its account's site. It has to be on the payment
+itself: the rules can look an account up for a single document read, but not
+for a query, so without it an agent cannot list settlements at all — and a
+balance computed without them tells the agent a customer still owes money they
+have already handed over. Settlements written before this carry no site;
+**Admin → CLOUD** offers to stamp them, which is the one edit the rules permit
+on an otherwise immutable record.
+
+## What each staff member syncs
+
+Listening to a whole collection only works if *every* document in it is
+readable, so only an admin can. An agent's listeners are scoped to match the
+rules exactly, using the same token claims the rules read:
+
+| Collection | Admin | Agent |
+|---|---|---|
+| `sites`, `staff` | all | all — every till needs them |
+| `vouchers`, `accounts`, `sales`, `payments` | all | `where siteId in (their sites)` |
+| `closings` | all | `where userId == them` |
+
+Getting this wrong is not a quiet failure: an unscoped listen is refused
+outright, the header shows **SYNC ERROR**, and Firestore then serves whatever
+the *previous* user of that device left in its local cache. Signing out now
+clears that cache for the same reason.
 
 ## Functions
 

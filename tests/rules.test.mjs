@@ -12,6 +12,7 @@ import {
 } from "@firebase/rules-unit-testing";
 import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, runTransaction,
+  query, where,
 } from "firebase/firestore";
 
 const SITE_A = "siteA", SITE_B = "siteB";
@@ -177,25 +178,72 @@ await check("sales are immutable — nobody edits or deletes history", async () 
 });
 
 /* ---------------- settlements ---------------- */
+const pay = (extra) => Object.assign({
+  accountId: "accA", siteId: SITE_A, amount: 5, method: "cash",
+  receivedBy: "agentA", receivedAt: "2026-08-03T00:00:00Z", allocations: [],
+}, extra);
+
 await check("a payment must be booked to the staff member taking it", async () => {
-  await assertSucceeds(setDoc(doc(agentA, "payments", "p1"), {
-    accountId: "accA", amount: 5, method: "cash", receivedBy: "agentA", receivedAt: "2026-08-03T00:00:00Z", allocations: [] }));
-  await assertFails(setDoc(doc(agentA, "payments", "p2"), {
-    accountId: "accA", amount: 5, method: "cash", receivedBy: "agentB", receivedAt: "2026-08-03T00:00:00Z", allocations: [] }));
+  await assertSucceeds(setDoc(doc(agentA, "payments", "p1"), pay()));
+  await assertFails(setDoc(doc(agentA, "payments", "p2"), pay({ receivedBy: "agentB" })));
 });
 await check("a payment cannot be recorded against another site's account", async () => {
-  await assertFails(setDoc(doc(agentA, "payments", "p3"), {
-    accountId: "accB", amount: 5, method: "cash", receivedBy: "agentA", receivedAt: "2026-08-03T00:00:00Z", allocations: [] }));
+  await assertFails(setDoc(doc(agentA, "payments", "p3"), pay({ accountId: "accB", siteId: SITE_B })));
+});
+// The stamped site is what the rules read, so it must not be free-form: a
+// payment claiming the wrong site would be visible to the wrong staff.
+await check("a payment cannot claim a site its account does not belong to", async () => {
+  await assertFails(setDoc(doc(agentA, "payments", "p3b"), pay({ accountId: "accB" })));
+  await assertFails(setDoc(doc(admin, "payments", "p3c"), pay({ accountId: "accA", siteId: SITE_B })));
 });
 await check("negative or bogus payments are rejected", async () => {
-  await assertFails(setDoc(doc(agentA, "payments", "p4"), {
-    accountId: "accA", amount: -50, method: "cash", receivedBy: "agentA", receivedAt: "2026-08-03T00:00:00Z", allocations: [] }));
-  await assertFails(setDoc(doc(agentA, "payments", "p5"), {
-    accountId: "accA", amount: 5, method: "barter", receivedBy: "agentA", receivedAt: "2026-08-03T00:00:00Z", allocations: [] }));
+  await assertFails(setDoc(doc(agentA, "payments", "p4"), pay({ amount: -50 })));
+  await assertFails(setDoc(doc(agentA, "payments", "p5"), pay({ method: "barter" })));
 });
 await check("settlements are immutable once recorded", async () => {
   await assertFails(updateDoc(doc(agentA, "payments", "p1"), { amount: 999 }));
+  await assertFails(updateDoc(doc(admin, "payments", "p1"), { siteId: SITE_B }));
   await assertFails(deleteDoc(doc(admin, "payments", "p1")));
+});
+// The one permitted edit: an admin stamping the site onto a record written
+// before payments carried it. Agents query settlements by site, so without
+// this those payments are invisible and balances read too high.
+await check("only an admin may stamp a missing site, and only the right one", async () => {
+  await env.withSecurityRulesDisabled(async (c) => setDoc(doc(c.firestore(), "payments", "pOld"), {
+    accountId: "accA", amount: 5, method: "cash", receivedBy: "agentA",
+    receivedAt: "2026-07-01T00:00:00Z", allocations: [] }));
+  await assertFails(updateDoc(doc(agentA, "payments", "pOld"), { siteId: SITE_A }));
+  await assertFails(updateDoc(doc(admin, "payments", "pOld"), { siteId: SITE_B }));
+  await assertFails(updateDoc(doc(admin, "payments", "pOld"), { siteId: SITE_A, amount: 999 }));
+  await assertSucceeds(updateDoc(doc(admin, "payments", "pOld"), { siteId: SITE_A }));
+  // and once stamped it is immutable again
+  await assertFails(updateDoc(doc(admin, "payments", "pOld"), { siteId: SITE_B }));
+});
+
+/* ---------------- the queries the app actually runs ---------------- */
+// An agent cannot listen to a whole collection: the rules refuse it, and the
+// app used to do exactly that — showing SYNC ERROR and then serving whatever
+// the previous user had left in the local cache.
+await check("an agent is refused an unscoped listen on site-scoped collections", async () => {
+  for (const coll of ["vouchers", "accounts", "sales", "payments"]) {
+    await assertFails(getDocs(collection(agentA, coll)));
+  }
+  await assertFails(getDocs(collection(agentA, "closings")));
+});
+await check("the same collections are readable when scoped to the agent's site", async () => {
+  for (const coll of ["vouchers", "accounts", "sales", "payments"]) {
+    await assertSucceeds(getDocs(query(collection(agentA, coll), where("siteId", "in", [SITE_A]))));
+  }
+  await assertSucceeds(getDocs(query(collection(agentA, "closings"), where("userId", "==", "agentA"))));
+});
+await check("scoping to somebody else's site is still refused", async () => {
+  await assertFails(getDocs(query(collection(agentA, "sales"), where("siteId", "in", [SITE_B]))));
+  await assertFails(getDocs(query(collection(agentA, "sales"), where("siteId", "in", [SITE_A, SITE_B]))));
+  await assertFails(getDocs(query(collection(agentA, "closings"), where("userId", "==", "agentB"))));
+});
+await check("staff and sites stay readable unscoped — every till needs them", async () => {
+  await assertSucceeds(getDocs(collection(agentA, "sites")));
+  await assertSucceeds(getDocs(collection(agentA, "staff")));
 });
 
 /* ---------------- closings ---------------- */

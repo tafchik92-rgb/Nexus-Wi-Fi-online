@@ -7,18 +7,35 @@
 /* ------------------------------------------------------------
    Sales terminal
    ------------------------------------------------------------ */
+// A till sells from exactly one site. "ALL SITES" is a reporting view and
+// means nothing here, so it is not silently resolved to whichever site
+// happens to be first — that quietly sold the wrong site's stock and booked
+// the takings against it. With a single site there is no ambiguity to raise.
+function terminalSiteId() {
+  const scoped = currentSiteId();
+  if (scoped) return scoped;
+  const mine = sitesForUser(currentUser());
+  return mine.length === 1 ? mine[0].id : "";
+}
+
 function renderTerminal() {
   const user = currentUser();
   if (!user) return;
-  const site = currentSiteId() || (sitesForUser(user)[0] || {}).id || "";
+  const site = terminalSiteId();
+  const choices = sitesForUser(user);
 
   $("#term-operator").innerHTML = `
     <span class="op-name">${esc(user.name)}</span>
     <span class="op-meta">${esc(user.code)} · ${roleChip(user.role)}</span>`;
-  $("#term-site").textContent = site ? siteName(site) : "NO SITE";
+  $("#term-site").textContent = site ? siteName(site)
+    : choices.length ? "CHOOSE A SITE" : "NO SITE";
 
   // Real shared stock: what every till at this site can still sell.
-  $("#pkg-cards").innerHTML = TYPE_ORDER.map((t) => {
+  $("#pkg-cards").innerHTML = !site
+    ? `<p class="pkg-hint">${choices.length
+        ? `This till is set to <b>ALL SITES</b>, which is a reporting view — pick the site you are selling from in the header to see its stock.`
+        : `You are not assigned to a site yet. An administrator can assign one from the Team page.`}</p>`
+    : TYPE_ORDER.map((t) => {
     const conf = VTYPES[t];
     const stock = stockOf(t, site);
     const out = stock === 0;
@@ -41,7 +58,7 @@ function renderTerminal() {
 function pendingAccount() {
   const name = $("#c-name").value.trim();
   if (!name) return null;
-  const site = currentSiteId() || (sitesForUser(currentUser())[0] || {}).id || "";
+  const site = terminalSiteId();
   const key = accountKey(name, $("#c-phone").value);
   return db.accounts.find((a) => a.siteId === site && accountKey(a.name, a.phone) === key) || null;
 }
@@ -50,7 +67,7 @@ function renderSummary() {
   const user = currentUser();
   const conf = ui.sale.type ? VTYPES[ui.sale.type] : null;
   const name = $("#c-name").value.trim();
-  const site = currentSiteId() || (sitesForUser(user)[0] || {}).id || "";
+  const site = terminalSiteId();
 
   $("#s-site").textContent = site ? siteName(site) : "—";
   $("#s-pkg").textContent = conf ? conf.label : "—";
@@ -101,7 +118,7 @@ function renderAgentLog() {
 
 async function completeSale() {
   const user = currentUser();
-  const site = currentSiteId() || (sitesForUser(user)[0] || {}).id || "";
+  const site = terminalSiteId();
   const nameField = $("#c-name");
   const customer = nameField.value.trim();
 
@@ -210,7 +227,7 @@ async function copyCode() {
    Agent credit view
    ------------------------------------------------------------ */
 function renderAgentCredit() {
-  const site = currentSiteId() || (sitesForUser(currentUser())[0] || {}).id || "";
+  const site = terminalSiteId();
   const open = openAccounts(site);
   const owed = open.reduce((sum, x) => sum + x.balance, 0);
   const user = currentUser();
@@ -327,7 +344,7 @@ function renderMonthEnd() {
   const user = currentUser();
   if (!user) return;
   const period = $("#me-period").value || monthKey(new Date());
-  const site = currentSiteId() || (sitesForUser(user)[0] || {}).id || "";
+  const site = terminalSiteId();
   const closed = closingFor(user.id, period, site);
   const r = closed ? closed.totals : buildReport(user.id, period, site);
 
@@ -385,7 +402,7 @@ function renderMonthEnd() {
 async function closeMonth() {
   const user = currentUser();
   const period = $("#me-period").value || monthKey(new Date());
-  const site = currentSiteId() || (sitesForUser(user)[0] || {}).id || "";
+  const site = terminalSiteId();
   if (closingFor(user.id, period, site)) return toast("This period is already closed", "err");
   if (period > monthKey(new Date())) return toast("That month has not started yet", "err");
 
@@ -406,7 +423,7 @@ async function closeMonth() {
 function exportMonthCSV() {
   const user = currentUser();
   const period = $("#me-period").value || monthKey(new Date());
-  const site = currentSiteId() || (sitesForUser(user)[0] || {}).id || "";
+  const site = terminalSiteId();
   const closed = closingFor(user.id, period, site);
   const r = closed ? closed.totals : buildReport(user.id, period, site);
 
