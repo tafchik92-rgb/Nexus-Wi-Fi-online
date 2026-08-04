@@ -261,6 +261,28 @@ instead of when their token expires.
 
 ---
 
+## Named Firestore databases
+
+If your project's Firestore is a **named** database rather than `(default)` —
+AI Studio provisions one, for example — every part of the stack must be told:
+
+- `firebase-config.js` → `firestoreDatabaseId: "…"` (the client SDK)
+- `functions/index.js` → `DATABASE_ID`, overridable with the
+  `FIRESTORE_DATABASE_ID` environment variable (the Admin SDK)
+- `firebase.json` → `firestore.database` (so rules and indexes deploy there)
+
+Miss any one and it silently talks to a database that does not exist. The
+symptom is not an error but a timeout: *"Could not reach Cloud Firestore
+backend. Backend didn't respond within 10 seconds."*
+
+## ⚠️ Never deploy open rules
+
+`deploy.sh` refuses to deploy a `firestore.rules` containing
+`allow read, write: if true`. That rule set exposes every customer, sale and
+debt to anyone who knows the project id — and the project id is public by
+design, sitting in the web config. If a tool ever rewrites the rules that way,
+restore them with `git checkout firestore.rules`.
+
 ## Troubleshooting
 
 **Cloud mode cannot run inside an embedded preview.** AI Studio (and similar

@@ -43,6 +43,16 @@ PROJECT="$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.re
 [ -n "$PROJECT" ] || die "No project in .firebaserc — add one, or run: npx firebase-tools use --add"
 ok "$PROJECT"
 
+# ---------- rules sanity ----------
+# A wide-open rule set exposes every customer, sale and debt to anyone who
+# knows the project id — which is public by design. Never ship it silently.
+say "Checking the security rules"
+if grep -Eq 'allow[[:space:]]+read,[[:space:]]*write:[[:space:]]*if[[:space:]]+true' firestore.rules; then
+  die "firestore.rules grants public read AND write access. Refusing to deploy.
+     Restore the real rules (git checkout firestore.rules) and try again."
+fi
+ok "rules are not wide open"
+
 FB="npx --yes firebase-tools@latest"
 
 # ---------- auth ----------

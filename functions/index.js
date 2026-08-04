@@ -12,7 +12,12 @@ const { getAuth } = require("firebase-admin/auth");
 const crypto = require("crypto");
 
 initializeApp();
-const dbf = () => getFirestore();
+
+// The project's Firestore may be a NAMED database rather than "(default)".
+// The Admin SDK defaults to "(default)", so without this the functions read
+// and write a database nobody else is using.
+const DATABASE_ID = process.env.FIRESTORE_DATABASE_ID || "ai-studio-nexuswifi-c56b2e13-8e06-41aa-bd40-1bd12d4dfe0f";
+const dbf = () => (DATABASE_ID ? getFirestore(DATABASE_ID) : getFirestore());
 
 /* ------------------------------------------------------------
    PIN hashing — scrypt (Node built-in KDF, no dependency)

@@ -116,7 +116,16 @@ function newId() {
 
 function save() {
   _rev++;
-  if (!cloudMode()) storage.setItem(DB_KEY, JSON.stringify(db));
+  // Cloud mode owns its own persistence. Guard on `enabled` as well as
+  // `ready`, so a connection that dropped mid-session never writes
+  // server data back over the local store.
+  if (typeof Backend !== "undefined" && (Backend.enabled || Backend.ready)) return;
+  try {
+    storage.setItem(DB_KEY, JSON.stringify(db));
+  } catch (e) {
+    // never let a storage failure take the till down mid-sale
+    console.warn("Could not save locally:", e && e.message);
+  }
 }
 
 function loadDb() {

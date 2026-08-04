@@ -157,7 +157,11 @@ async function attemptLogin(code, pin) {
 
 // Firebase errors arrive prefixed; show the message the function actually sent.
 function cloudError(e) {
-  const msg = String((e && e.message) || e || "Unknown error").replace(/^.*?\/\s*/, "");
+  let msg = String((e && e.message) || e || "Unknown error");
+  if (/network-request-failed|Failed to fetch|didn't respond/i.test(msg)) {
+    return "Could not reach Firebase. Check the connection, then run backend diagnostics.";
+  }
+  msg = msg.replace(/^Firebase:\s*(Error\s*)?(\([^)]+\):?\s*)?/i, "").replace(/^.*?\/\s*/, "");
   // A bare "internal" means the call never produced a real answer — the
   // function is missing, blocked, or crashed. Diagnostics can tell which.
   if (/^internal$/i.test(msg.trim())) {

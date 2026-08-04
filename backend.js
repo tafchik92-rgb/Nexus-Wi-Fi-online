@@ -89,6 +89,27 @@ function parseFirebaseConfig(text) {
   throw new Error("Could not read that config. Copy it again from Firebase console → Project settings → Your apps.");
 }
 
+// Firestore hands back Timestamps, GeoPoints and DocumentReferences, which
+// carry references back into the SDK. Storing those raises "Converting
+// circular structure to JSON" the moment anything serialises the store, and
+// the app's date maths expects ISO strings anyway.
+function plainDoc(value, depth = 0) {
+  if (value === null || typeof value !== "object") return value;
+  if (depth > 8) return undefined;
+  if (typeof value.toDate === "function") return value.toDate().toISOString();      // Timestamp
+  if (typeof value.latitude === "number" && typeof value.longitude === "number") {
+    return { latitude: value.latitude, longitude: value.longitude };               // GeoPoint
+  }
+  if (value.firestore || value.path && value.id && value.parent) return value.path; // DocumentReference
+  if (Array.isArray(value)) return value.map((v) => plainDoc(v, depth + 1));
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    const clean = plainDoc(v, depth + 1);
+    if (clean !== undefined) out[k] = clean;
+  }
+  return out;
+}
+
 const Backend = {
   enabled: false,
   ready: false,
@@ -152,13 +173,28 @@ const Backend = {
     this.app = appMod.getApps().length ? appMod.getApp() : appMod.initializeApp(this.config);
     this.auth = authMod.getAuth(this.app);
 
-    // Persistent cache = the till keeps working when the link drops.
+    // Firestore may live in a NAMED database rather than "(default)" —
+    // connecting to the wrong one simply times out with no useful error.
+    const dbId = this.config.firestoreDatabaseId || undefined;
+
+    // Persistent cache keeps the till trading when the link drops. Long
+    // polling is auto-detected because sandboxed frames and restrictive
+    // proxies often break the streaming transport.
     try {
       this.db = storeMod.initializeFirestore(this.app, {
         localCache: storeMod.persistentLocalCache({ tabManager: storeMod.persistentMultipleTabManager() }),
-      });
+        experimentalAutoDetectLongPolling: true,
+      }, dbId);
     } catch (_) {
-      this.db = storeMod.getFirestore(this.app);      // already initialised
+      try {
+        // no IndexedDB (private mode, some frames) — trade offline reads for a connection
+        this.db = storeMod.initializeFirestore(this.app, {
+          localCache: storeMod.memoryLocalCache(),
+          experimentalAutoDetectLongPolling: true,
+        }, dbId);
+      } catch (_) {
+        this.db = storeMod.getFirestore(this.app, dbId);   // already initialised
+      }
     }
     this.fns = fnMod.getFunctions(this.app, this.config.functionsRegion || undefined);
 
@@ -210,7 +246,7 @@ const Backend = {
     return new Promise((resolve) => {
       for (const [key, coll] of Object.entries(COLLECTIONS)) {
         const un = store.onSnapshot(store.collection(this.db, coll), (snap) => {
-          db[key] = snap.docs.map((d) => Object.assign({ id: d.id }, d.data()));
+          db[key] = snap.docs.map((d) => Object.assign({ id: d.id }, plainDoc(d.data())));
           this.pending = snap.docs.filter((d) => d.metadata.hasPendingWrites).length;
           this.status = snap.metadata.fromCache && this.pending > 0 ? "offline" : "online";
           bumpRev();

@@ -23,6 +23,11 @@ window.NEXUS_FIREBASE_CONFIG = {
   messagingSenderId: "999293040350",
   appId: "1:999293040350:web:6d140503aacf80abe4744f",
 
+  // This project's Firestore lives in a NAMED database, not "(default)".
+  // Without this the SDK talks to a database that does not exist and the
+  // connection simply times out after ten seconds.
+  firestoreDatabaseId: "ai-studio-nexuswifi-c56b2e13-8e06-41aa-bd40-1bd12d4dfe0f",
+
   // Flip to true once `firebase deploy` has published the rules and
   // functions, and tills will connect to the cloud on load. Left false,
   // the config is merely pre-filled in Admin → CLOUD, one click away —
