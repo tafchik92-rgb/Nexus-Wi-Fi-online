@@ -72,12 +72,38 @@ if command -v gcloud >/dev/null; then
     firestore.googleapis.com \
     firebaserules.googleapis.com \
     identitytoolkit.googleapis.com \
+    iamcredentials.googleapis.com \
     --project "$PROJECT" --quiet 2>/dev/null && ok "APIs enabled" || {
       warn "Could not enable APIs automatically."
       warn "If the deploy fails with a 403, enable them once in the console and re-run."
     }
 else
   warn "gcloud not found — the first deploy may ask to enable APIs. Answer yes."
+fi
+
+# ---------- token signing ----------
+# Gen-2 functions run as the compute service account, which by default
+# cannot sign the custom tokens signIn issues. Without this the app fails
+# with a bare "internal" on first sign-in.
+if command -v gcloud >/dev/null; then
+  say "Allowing the functions to sign sign-in tokens"
+  NUM="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)' 2>/dev/null || true)"
+  if [ -n "$NUM" ]; then
+    RUNTIME_SA="$NUM-compute@developer.gserviceaccount.com"
+    gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
+      --member="serviceAccount:$RUNTIME_SA" \
+      --role="roles/iam.serviceAccountTokenCreator" \
+      --project "$PROJECT" --quiet >/dev/null 2>&1 \
+      && ok "$RUNTIME_SA can sign tokens" \
+      || warn "Could not grant Service Account Token Creator — grant it by hand if sign-in fails"
+    # writing Firestore from the functions
+    gcloud projects add-iam-policy-binding "$PROJECT" \
+      --member="serviceAccount:$RUNTIME_SA" \
+      --role="roles/datastore.user" --condition=None --quiet >/dev/null 2>&1 \
+      && ok "Firestore access granted" || true
+  else
+    warn "Could not read the project number — skipping the IAM grant"
+  fi
 fi
 
 # ---------- dependencies ----------

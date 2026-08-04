@@ -69,6 +69,16 @@ hotspot exports** (`.xlsx` / `.csv` — e.g. TP-Link Omada `VoucherList` files:
 codes from the *Code* column, group auto-detected from *Price*). Duplicate
 detection, batch tracking and per-group stock meters throughout.
 
+## 📱 Install on a phone
+
+The app is installable. Open it in Chrome or Safari on the phone and choose
+**Add to Home Screen** — it then launches full screen with its own icon, and a
+service worker caches the app shell so it **opens with no connection at all**.
+Agents can trade through an outage and sync later.
+
+Installation needs HTTPS (or `localhost`), so deploy it — Firebase Hosting,
+Netlify or GitHub Pages all qualify.
+
 ## 🚀 Run it
 
 ```bash

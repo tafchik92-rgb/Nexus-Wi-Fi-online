@@ -39,6 +39,54 @@ function pinMatches(pin, record) {
 }
 
 const validPin = (pin) => typeof pin === "string" && /^\d{4,8}$/.test(pin);
+
+/* ------------------------------------------------------------
+   Error translation.
+
+   An unhandled throw surfaces in the browser as a bare "internal",
+   which tells an operator nothing. Wrap every handler so real faults
+   arrive as the specific thing to go and fix — the two that bite on a
+   first deploy are Firestore not being created yet, and the runtime
+   service account lacking permission to sign custom tokens.
+   ------------------------------------------------------------ */
+function translate(err) {
+  if (err instanceof HttpsError) return err;
+  const msg = String((err && err.message) || err || "");
+  const code = (err && err.code) || "";
+
+  if (/iam\.serviceAccounts\.signBlob|signBlob|Permission.*denied.*sign/i.test(msg)) {
+    return new HttpsError("failed-precondition",
+      "This project cannot sign sign-in tokens yet. Grant the functions service account the " +
+      "'Service Account Token Creator' role and enable the IAM Service Account Credentials API, " +
+      "then try again. Re-running deploy.sh does both.");
+  }
+  if (/NOT_FOUND|database.*does not exist|5 NOT_FOUND/i.test(msg) || code === 5) {
+    return new HttpsError("failed-precondition",
+      "No Firestore database in this project. Create one in the Firebase console " +
+      "(Build → Firestore Database → Create database) and try again.");
+  }
+  if (/PERMISSION_DENIED|7 PERMISSION_DENIED/i.test(msg) || code === 7) {
+    return new HttpsError("failed-precondition",
+      "The functions service account is missing permission to read or write Firestore. " +
+      "Grant it the 'Cloud Datastore User' role and try again.");
+  }
+  if (/CONFIGURATION_NOT_FOUND|identitytoolkit|auth\/configuration/i.test(msg)) {
+    return new HttpsError("failed-precondition",
+      "Authentication is not enabled on this project. In the Firebase console open " +
+      "Authentication → Get started and enable the Anonymous provider, then try again.");
+  }
+  console.error("Unhandled function error:", err);
+  return new HttpsError("internal", `Unexpected server error: ${msg.slice(0, 300)}`);
+}
+
+// Wraps a callable so failures arrive as something actionable.
+const guard = (handler) => async (req) => {
+  try {
+    return await handler(req);
+  } catch (err) {
+    throw translate(err);
+  }
+};
 const clean = (s, max = 60) => String(s == null ? "" : s).trim().slice(0, max);
 
 /* ------------------------------------------------------------
@@ -51,7 +99,7 @@ const LOCK_MS = 5 * 60 * 1000;
    bootstrap — creates the founding administrator.
    Only works while no staff exist, so it cannot be replayed.
    ------------------------------------------------------------ */
-exports.bootstrap = onCall(async (req) => {
+exports.bootstrap = onCall(guard(async (req) => {
   const db = dbf();
   const name = clean(req.data && req.data.name);
   const code = clean(req.data && req.data.code, 12).toUpperCase();
@@ -79,12 +127,12 @@ exports.bootstrap = onCall(async (req) => {
   await batch.commit();
 
   return { ok: true, staffId: staffRef.id, siteId: siteRef.id };
-});
+}));
 
 /* ------------------------------------------------------------
    signIn — the only place a PIN is ever checked
    ------------------------------------------------------------ */
-exports.signIn = onCall(async (req) => {
+exports.signIn = onCall(guard(async (req) => {
   const db = dbf();
   const code = clean(req.data && req.data.code, 12).toUpperCase();
   const pin = req.data && req.data.pin;
@@ -137,7 +185,7 @@ exports.signIn = onCall(async (req) => {
   });
 
   return { token, staff: { id: staffDoc.id, name: staff.name, code: staff.code, role: staff.role, siteIds: staff.siteIds || [] } };
-});
+}));
 
 /* ------------------------------------------------------------
    Staff provisioning (admin only)
@@ -154,7 +202,7 @@ async function requireAdmin(req) {
   return doc;
 }
 
-exports.createStaff = onCall(async (req) => {
+exports.createStaff = onCall(guard(async (req) => {
   await requireAdmin(req);
   const db = dbf();
   const name = clean(req.data && req.data.name);
@@ -179,10 +227,10 @@ exports.createStaff = onCall(async (req) => {
     .commit();
 
   return { ok: true, staffId: ref.id };
-});
+}));
 
 // Change your own PIN — current PIN required.
-exports.changePin = onCall(async (req) => {
+exports.changePin = onCall(guard(async (req) => {
   if (!req.auth) throw new HttpsError("unauthenticated", "Sign in first.");
   const db = dbf();
   const { currentPin, newPin } = req.data || {};
@@ -195,10 +243,10 @@ exports.changePin = onCall(async (req) => {
   }
   await ref.set(makePinRecord(newPin), { merge: true });
   return { ok: true };
-});
+}));
 
 // Admin resets someone else's PIN; the generated PIN is returned once.
-exports.resetPin = onCall(async (req) => {
+exports.resetPin = onCall(guard(async (req) => {
   await requireAdmin(req);
   const db = dbf();
   const staffId = clean(req.data && req.data.staffId, 60);
@@ -210,7 +258,7 @@ exports.resetPin = onCall(async (req) => {
   await db.collection("staffAuth").doc(staffId).set(
     Object.assign(makePinRecord(pin), { failedAttempts: 0, lockedUntil: null }), { merge: true });
   return { ok: true, pin };
-});
+}));
 
 /* ------------------------------------------------------------
    reserveVouchers — how a till stays sellable offline.
@@ -219,7 +267,7 @@ exports.resetPin = onCall(async (req) => {
    the rules then let it sell only what it holds. Two tills can never be
    handed the same code, so going offline cannot double-sell.
    ------------------------------------------------------------ */
-exports.reserveVouchers = onCall(async (req) => {
+exports.reserveVouchers = onCall(guard(async (req) => {
   if (!req.auth) throw new HttpsError("unauthenticated", "Sign in first.");
   const db = dbf();
   const uid = req.auth.uid;
@@ -265,14 +313,14 @@ exports.reserveVouchers = onCall(async (req) => {
   });
 
   return { ok: true, reserved: reserved.concat(claimed).map(stripVoucher), claimed: claimed.length };
-});
+}));
 
 function stripVoucher(v) {
   return { id: v.id, code: v.code, type: v.type, siteId: v.siteId, status: v.status, batch: v.batch || "", reservedBy: v.reservedBy || null };
 }
 
 // Hand unsold reservations back to the pool (sign-out, or shift change).
-exports.releaseReservations = onCall(async (req) => {
+exports.releaseReservations = onCall(guard(async (req) => {
   if (!req.auth) throw new HttpsError("unauthenticated", "Sign in first.");
   const db = dbf();
   const snap = await db.collection("vouchers")
@@ -282,4 +330,4 @@ exports.releaseReservations = onCall(async (req) => {
   snap.docs.forEach((d) => batch.update(d.ref, { reservedBy: null, reservedAt: null }));
   await batch.commit();
   return { ok: true, released: snap.size };
-});
+}));

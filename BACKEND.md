@@ -258,6 +258,26 @@ instead of when their token expires.
 
 ---
 
+## Troubleshooting
+
+**Sign-in or setup fails with `internal`.** A function crashed rather than
+returning a real error. The functions now translate the common causes into
+plain instructions, so re-deploy first (`bash deploy.sh`) and read the new
+message. The usual culprits, in order:
+
+| Cause | Fix |
+|---|---|
+| Runtime service account cannot sign custom tokens | `deploy.sh` grants **Service Account Token Creator** to `PROJECT_NUMBER-compute@developer.gserviceaccount.com` and enables `iamcredentials.googleapis.com`. This is the most common one — Gen-2 functions do not get it by default. |
+| No Firestore database yet | Console → Build → Firestore Database → **Create database** (production mode) |
+| Authentication not enabled | Console → Authentication → Get started → enable **Anonymous** |
+| Functions not deployed | `bash deploy.sh` — the app calls `bootstrap` and `signIn` by name |
+
+To see the real stack behind any failure:
+
+```bash
+npx firebase-tools functions:log --only signIn,bootstrap
+```
+
 ## Cost and limits
 
 - Firestore free tier: 50k reads / 20k writes per day. A shop doing a few

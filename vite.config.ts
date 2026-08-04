@@ -6,7 +6,7 @@ import {defineConfig} from 'vite';
 // cannot bundle them and drops them from the build. Copy them into dist
 // verbatim, otherwise the built page loads no JavaScript at all.
 const STATIC_SCRIPTS = [
-  'firebase-config.js',
+  'firebase-config.js', 'sw.js', 'manifest.webmanifest',
   'importer.js', 'backend.js', 'core.js', 'admin.js', 'agent.js', 'app.js',
 ];
 
@@ -18,6 +18,27 @@ const copyStaticScripts = () => ({
     for (const file of STATIC_SCRIPTS) {
       const from = path.resolve(__dirname, file);
       if (fs.existsSync(from)) fs.copyFileSync(from, path.resolve(out, file));
+    }
+    // Teach the service worker the hashed asset names Vite just produced,
+    // so the precache covers the built CSS rather than the source filename.
+    const swOut = path.resolve(out, 'sw.js');
+    const htmlOut = path.resolve(out, 'index.html');
+    if (fs.existsSync(swOut) && fs.existsSync(htmlOut)) {
+      const html = fs.readFileSync(htmlOut, 'utf8');
+      const assets = [...html.matchAll(/(?:href|src)="\.?\/?(assets\/[^"]+)"/g)]
+        .map((m) => `"./${m[1]}"`);
+      if (assets.length) {
+        fs.writeFileSync(swOut,
+          fs.readFileSync(swOut, 'utf8').replace('/*__BUILD_ASSETS__*/', assets.join(', ')));
+      }
+    }
+
+    const icons = path.resolve(__dirname, 'icons');
+    if (fs.existsSync(icons)) {
+      fs.mkdirSync(path.resolve(out, 'icons'), {recursive: true});
+      for (const f of fs.readdirSync(icons)) {
+        fs.copyFileSync(path.resolve(icons, f), path.resolve(out, 'icons', f));
+      }
     }
   },
 });

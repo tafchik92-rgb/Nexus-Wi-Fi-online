@@ -734,7 +734,17 @@ async function pushLocalToCloud() {
 /* ------------------------------------------------------------
    Boot
    ------------------------------------------------------------ */
+// Register the service worker so the till launches without a connection.
+// file:// has no worker support, and a failure here must never block the app.
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator) || location.protocol === "file:") return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+
 (async function boot() {
+  registerServiceWorker();
   db = loadDb();
   Backend.loadConfig();
   wire();
