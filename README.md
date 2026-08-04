@@ -139,6 +139,9 @@ outstanding amount is always `price − allocated`.
 
 ## ☁️ Cloud mode (Firebase)
 
+**[▸ Deploy the backend in Cloud Shell](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2Ftafchik92-rgb%2FNexus-Wi-Fi-online&cloudshell_workspace=.&cloudshell_open_in_editor=deploy.sh)** → then run `bash deploy.sh`
+
+
 The app runs against a real backend when you want one — **Admin → CLOUD**, paste
 your Firebase web config, connect, then push this browser's data up. Full setup,
 deployment and cost notes are in **[BACKEND.md](BACKEND.md)**.

@@ -45,7 +45,32 @@ The browser is treated as hostile. Three things make that real:
 Cloud Functions require the **Blaze** (pay-as-you-go) plan. A shop of this size
 sits inside the free monthly allowance; set a budget alert if you want a cap.
 
-## 2. Install the tooling
+## 2. Deploy in one command (Cloud Shell)
+
+**[▸ Open this repo in Google Cloud Shell](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2Ftafchik92-rgb%2FNexus-Wi-Fi-online&cloudshell_workspace=.&cloudshell_open_in_editor=deploy.sh)**
+
+Cloud Shell is a browser terminal already signed in as you, so there are no keys
+to copy and nothing to paste. Once it opens:
+
+```bash
+bash deploy.sh
+```
+
+That enables the required Google Cloud APIs, installs the function
+dependencies, and deploys the rules, indexes and functions. Options:
+`--rules-only` for just the security rules, `--with-hosting` to build and
+publish the web app too. Re-running it is safe.
+
+*The one-click link clones over HTTPS, so a **private** repo will ask Cloud
+Shell to authenticate to GitHub. Either make the repo public (it holds no
+secrets — the Firebase web config is public by design and the deploy key lives
+in GitHub Actions) or clone it yourself in Cloud Shell first.*
+
+Nothing can deploy with **no** authentication at all: publishing rules changes
+who may read your shop's data, so Google requires an authenticated admin. Cloud
+Shell removes the credential handling, not the sign-in.
+
+## 3. Or install the tooling locally
 
 ```bash
 npm install -g firebase-tools
@@ -55,7 +80,7 @@ firebase use --add            # pick the project, alias it "default"
 cd functions && npm install && cd ..
 ```
 
-## 3. Deploy rules, indexes and functions
+## 4. Deploy rules, indexes and functions
 
 ```bash
 firebase deploy --only firestore:rules,firestore:indexes,functions
@@ -76,7 +101,7 @@ firebase deploy --only hosting
 Point `hosting.public` in `firebase.json` at `dist` if you deploy the built
 output; leave it at `.` if you deploy the plain static files as-is.
 
-## 4. Connect the app
+## 5. Connect the app
 
 Two ways:
 
@@ -95,7 +120,7 @@ A brand-new project has no staff, so the login screen offers **set up a new
 shop**, which calls `bootstrap` to create the founding administrator and first
 site. `bootstrap` refuses to run once any staff exist, so it cannot be replayed.
 
-## 5. Move your existing data across
+## 6. Move your existing data across
 
 **Admin → CLOUD → PUSH LOCAL DATA TO CLOUD** uploads this browser's sites,
 vouchers, accounts, sales, payments and closings. Records keep their ids, so
