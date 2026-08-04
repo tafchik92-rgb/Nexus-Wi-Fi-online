@@ -241,6 +241,32 @@ const Backend = {
     }
     add("Project", "ok", cfg.projectId + (cfg.useEmulators ? " (emulators)" : ""), "");
 
+    // Check the page can reach the network at all before blaming the backend.
+    // Sandboxed previews (AI Studio, embedded frames) commonly allow scripts
+    // from a CDN yet block fetch/XHR, and every Firebase call then fails
+    // identically — which the SDK surfaces as a bare "internal".
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      add("Network", "fail", "This device is offline",
+        "Reconnect and run diagnostics again. Local mode keeps selling meanwhile.");
+      return out;
+    }
+    if (!cfg.useEmulators) {
+      let framed = false;
+      try { framed = window.top !== window.self; } catch (_) { framed = true; }
+      try {
+        await fetch(SDK("app"), { method: "GET", cache: "no-store" });
+        add("Network access", "ok", "outbound requests allowed" + (framed ? " (inside a frame)" : ""), "");
+      } catch (e) {
+        add("Network access", "fail",
+          "This page cannot make outbound requests" + (framed ? " — it is running inside an embedded preview frame" : ""),
+          framed
+            ? "Cloud mode needs direct network access. Open the deployed app in its own browser tab (Firebase Hosting, or npm run build then serve dist/) — an embedded preview blocks these calls."
+            : "Something between this browser and Google is blocking requests — a content policy, extension, proxy or firewall. Try the deployed app in a normal browser tab, on another network, with extensions disabled.");
+        add("Everything below", "warn", "Not checked — every backend call fails the same way while the network is blocked", "");
+        return out;
+      }
+    }
+
     const emu = !!cfg.useEmulators;
     const host = cfg.emulatorHost || "127.0.0.1";
     const key = encodeURIComponent(cfg.apiKey);

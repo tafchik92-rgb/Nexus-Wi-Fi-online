@@ -260,6 +260,16 @@ instead of when their token expires.
 
 ## Troubleshooting
 
+**Cloud mode cannot run inside an embedded preview.** AI Studio (and similar
+sandboxed previews) allow the page to load scripts from a CDN but block its
+outbound `fetch`/XHR. Every Firebase call then fails identically, and the SDK
+reports that as a bare `internal`. Diagnostics detects this and says so. The fix
+is not a Firebase setting — **open the app in its own browser tab**:
+
+```bash
+npm run build && npx firebase-tools deploy --only hosting   # or: npx serve dist
+```
+
 **First stop: the app can diagnose itself.** On the cloud login/setup screen
 (or Admin → CLOUD) choose **RUN DIAGNOSTICS** — it probes the project from the
 browser and names the broken piece: database missing, Authentication off,
