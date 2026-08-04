@@ -369,13 +369,49 @@ function renderVoucherSiteSelect() {
     : (sites[0] ? sites[0].id : "");
 }
 
-function renderVouchers() {
-  const { type, status } = ui.vfilters;
+// The rows the vault is currently showing — also exactly what a bulk purge
+// acts on, so the operator can always see what they are about to delete.
+function filteredVouchers() {
+  const { type, status, batch } = ui.vfilters;
   const site = currentSiteId();
-  const rows = db.vouchers
+  return db.vouchers
     .filter((v) => inSite(v, site))
-    .filter((v) => (type === "all" || v.type === type) && (status === "all" || v.status === status))
+    .filter((v) => (type === "all" || v.type === type)
+                && (status === "all" || v.status === status)
+                && (!batch || batch === "all" || v.batch === batch))
     .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt) || a.code.localeCompare(b.code));
+}
+
+function renderVouchers() {
+  const site = currentSiteId();
+  const rows = filteredVouchers();
+
+  // Batches are how stock arrives, so they are how a mistaken upload is undone.
+  const sel = $("#vf-batch");
+  if (sel) {
+    const batches = [...new Set(db.vouchers.filter((v) => inSite(v, site)).map((v) => v.batch).filter(Boolean))].sort().reverse();
+    const prev = ui.vfilters.batch || "all";
+    sel.innerHTML = `<option value="all">ANY BATCH</option>` +
+      batches.map((b) => `<option value="${esc(b)}">${esc(b)}</option>`).join("");
+    sel.value = batches.includes(prev) ? prev : "all";
+    ui.vfilters.batch = sel.value;
+  }
+
+  // Sold vouchers are the record of a sale and can never be deleted — the
+  // rules refuse it too — so a purge only ever offers the unsold ones.
+  const purgeable = rows.filter((v) => v.status === "available");
+  const btn = $("#btn-purge-filtered");
+  const note = $("#voucher-purge-note");
+  if (btn) {
+    btn.hidden = purgeable.length === 0;
+    btn.textContent = `✕ PURGE ${purgeable.length}`;
+  }
+  if (note) {
+    const sold = rows.length - purgeable.length;
+    note.hidden = purgeable.length === 0;
+    note.textContent = `PURGE deletes the ${purgeable.length} unsold voucher${purgeable.length === 1 ? "" : "s"} listed below`
+      + (sold ? `; the ${sold} already sold stay, since they are the record of a sale.` : ".");
+  }
 
   const anyInScope = db.vouchers.some((v) => inSite(v, site));
   $("#voucher-empty").hidden = anyInScope;
@@ -413,6 +449,46 @@ function addVoucherCodes(type, siteId, codes, batch, uploadedAt) {
     added++;
   }
   return { added, skipped };
+}
+
+// Deletes every unsold voucher in the current view. Uploading a wrong file is
+// easy and the ledger fills with hundreds of dead codes; purging them one at a
+// time, each behind its own confirmation, is not a real way out of that.
+async function purgeFilteredVouchers() {
+  if (!isAdmin()) return toast("Administrators only", "err");
+  const doomed = filteredVouchers().filter((v) => v.status === "available");
+  if (!doomed.length) return toast("Nothing to purge in this view", "err");
+
+  const site = currentSiteId();
+  const where = site ? ` at ${siteName(site)}` : " across every site";
+  const { type, status, batch } = ui.vfilters;
+  const narrowed = [
+    type !== "all" ? VTYPES[type].label : null,
+    batch && batch !== "all" ? `batch ${batch}` : null,
+  ].filter(Boolean).join(" · ");
+
+  if (!(await confirmDlg(
+    `Permanently delete ${doomed.length} unsold voucher${doomed.length === 1 ? "" : "s"}${where}${narrowed ? ` (${narrowed})` : ""}? ` +
+    `Sold vouchers are never touched. This cannot be undone.`))) return;
+
+  const btn = $("#btn-purge-filtered");
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "◈ PURGING…";
+  try {
+    const { removed, failed } = await Backend.dropMany("vouchers", doomed.map((v) => v.id));
+    const gone = new Set(doomed.slice(0, removed).map((v) => v.id));
+    db.vouchers = db.vouchers.filter((v) => !gone.has(v.id));
+    save(); renderAll();
+    toast(failed
+      ? `${removed} voucher(s) purged · ${failed} refused by the server`
+      : `${removed} voucher${removed === 1 ? "" : "s"} purged`, failed ? "err" : "ok");
+  } catch (e) {
+    toast(cloudError(e), "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 function uploadVouchers(type, rawText) {

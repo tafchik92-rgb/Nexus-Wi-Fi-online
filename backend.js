@@ -456,6 +456,33 @@ const Backend = {
     await store.updateDoc(store.doc(this.db, coll, id), fields);
   },
 
+  // Deletes many documents at once, and reports what the server actually did.
+  // A mistaken upload can be hundreds of codes; firing that many individual
+  // deletes is slow and, worse, silent about the ones that were refused.
+  async dropMany(key, ids) {
+    const store = this.ready4store();
+    const coll = COLLECTIONS[key];
+    if (!coll) throw new Error("Unknown collection: " + key);
+    let removed = 0, failed = 0;
+    for (let i = 0; i < ids.length; i += 400) {   // Firestore caps a batch at 500
+      const slice = ids.slice(i, i + 400);
+      const batch = store.writeBatch(this.db);
+      slice.forEach((id) => batch.delete(store.doc(this.db, coll, id)));
+      try {
+        await batch.commit();
+        removed += slice.length;
+      } catch (_) {
+        // One refusal fails the whole batch, so fall back to per-document
+        // deletes and keep the ones the rules do allow.
+        for (const id of slice) {
+          try { await store.deleteDoc(store.doc(this.db, coll, id)); removed++; }
+          catch (_) { failed++; }
+        }
+      }
+    }
+    return { removed, failed };
+  },
+
   drop(key, id) {
     const store = this.ready4store();
     const coll = COLLECTIONS[key];

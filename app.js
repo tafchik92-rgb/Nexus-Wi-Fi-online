@@ -8,7 +8,7 @@ const ui = {
   tab: "admin",
   sub: "dash",
   filters: { q: "", type: "all", pay: "all", range: "all" },
-  vfilters: { type: "all", status: "all" },
+  vfilters: { type: "all", status: "all", batch: "all" },
   uploadType: "V5",
   sale: { type: null, pay: "cash" },
   settleAccount: null,
@@ -211,9 +211,13 @@ function enterApp() {
   $("#user-meta").innerHTML = `${esc(user.code)} · ${roleChip(user.role)}`;
 
   // tabs by role
+  // Hide what the role cannot open. The CREDIT and MONTH-END tabs are the
+  // agent's own views; an admin has the same ground under Admin → CREDIT and
+  // Admin → REPORTS. They used to be shown to admins but rejected by setTab,
+  // so clicking them simply did nothing.
   $$(".tab").forEach((b) => {
-    const adminOnly = b.dataset.role === "admin";
-    b.hidden = adminOnly && !admin;
+    const role = b.dataset.role;
+    b.hidden = (role === "admin" && !admin) || (role === "agent" && admin);
   });
   if (!admin && (ui.tab === "admin")) ui.tab = "terminal";
   if (admin && !["admin", "terminal"].includes(ui.tab)) ui.tab = "admin";
@@ -446,6 +450,8 @@ function wire() {
   });
   $("#vf-type").addEventListener("change", (e) => { ui.vfilters.type = e.target.value; renderVouchers(); });
   $("#vf-status").addEventListener("change", (e) => { ui.vfilters.status = e.target.value; renderVouchers(); });
+  $("#vf-batch").addEventListener("change", (e) => { ui.vfilters.batch = e.target.value; renderVouchers(); });
+  $("#btn-purge-filtered").addEventListener("click", purgeFilteredVouchers);
 
   // cloud panel
   $("#cloud-form").addEventListener("submit", async (e) => {

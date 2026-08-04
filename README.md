@@ -70,6 +70,11 @@ hotspot exports** (`.xlsx` / `.csv` — e.g. TP-Link Omada `VoucherList` files:
 codes from the *Code* column, group auto-detected from *Price*). Duplicate
 detection, batch tracking and per-group stock meters throughout.
 
+Stock is removed the same way it arrives — in bulk. Filter the vault by site,
+group, status or **upload batch**, and **PURGE** deletes every unsold voucher
+in view. Sold vouchers are never deletable: they are the record of a sale, and
+the security rules refuse it regardless of what the client asks.
+
 ## 📱 Install on a phone
 
 The app is installable. Open it in Chrome or Safari on the phone and choose

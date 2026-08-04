@@ -165,8 +165,8 @@
       <nav class="tabs" role="tablist" aria-label="Workspace">
         <button class="tab is-active" role="tab" aria-selected="true" data-tab="admin" data-role="admin"><span class="tab-index">01</span> ADMIN</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="terminal"><span class="tab-index">02</span> TERMINAL</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="credit"><span class="tab-index">03</span> CREDIT</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="monthend"><span class="tab-index">04</span> MONTH&#8209;END</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="credit" data-role="agent"><span class="tab-index">03</span> CREDIT</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="monthend" data-role="agent"><span class="tab-index">04</span> MONTH&#8209;END</button>
       </nav>
 
       <div class="topright">
@@ -328,8 +328,13 @@
                   <select id="vf-status" class="field" aria-label="Filter vouchers by status">
                     <option value="all">ANY STATUS</option><option value="available">AVAILABLE</option><option value="sold">SOLD</option>
                   </select>
+                  <select id="vf-batch" class="field" aria-label="Filter vouchers by upload batch">
+                    <option value="all">ANY BATCH</option>
+                  </select>
+                  <button class="btn btn-danger btn-xs" id="btn-purge-filtered" hidden>✕ PURGE</button>
                 </div>
               </header>
+              <p class="hint" id="voucher-purge-note" hidden></p>
               <div class="table-wrap table-tall">
                 <table class="grid-table" id="voucher-table">
                   <thead><tr><th>CODE</th><th>TYPE</th><th>SITE</th><th>STATUS</th><th>BATCH</th><th>UPLOADED</th><th></th></tr></thead>
