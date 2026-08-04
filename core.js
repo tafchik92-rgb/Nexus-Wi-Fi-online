@@ -116,10 +116,10 @@ function newId() {
 
 function save() {
   _rev++;
-  // Cloud mode owns its own persistence. Guard on `enabled` as well as
-  // `ready`, so a connection that dropped mid-session never writes
-  // server data back over the local store.
-  if (typeof Backend !== "undefined" && (Backend.enabled || Backend.ready)) return;
+  // Cloud mode owns its own persistence — but only once it is actually
+  // connected. Skipping on `enabled` alone silently discarded every local
+  // write whenever the backend was configured but unreachable.
+  if (cloudMode()) return;
   try {
     storage.setItem(DB_KEY, JSON.stringify(db));
   } catch (e) {

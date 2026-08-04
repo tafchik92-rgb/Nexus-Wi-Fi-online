@@ -28,9 +28,10 @@ window.NEXUS_FIREBASE_CONFIG = {
   // connection simply times out after ten seconds.
   firestoreDatabaseId: "ai-studio-nexuswifi-c56b2e13-8e06-41aa-bd40-1bd12d4dfe0f",
 
-  // Flip to true once `firebase deploy` has published the rules and
-  // functions, and tills will connect to the cloud on load. Left false,
-  // the config is merely pre-filled in Admin → CLOUD, one click away —
-  // so a backend that is not ready yet can never lock staff out.
-  autoConnect: false,
+  // With this true, every till connects to the shared shop on load — which
+  // is what makes a phone and a desktop show the same sales. If the backend
+  // cannot be reached the app says so and falls back to local mode, and the
+  // login screen offers to work offline on purpose, so a server problem can
+  // never stop the shop selling.
+  autoConnect: true,
 };

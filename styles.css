@@ -823,3 +823,15 @@ html { overflow-x: hidden; }
 .diag-body b { font-size: 12.5px; letter-spacing: .06em; }
 .diag-detail { font-size: 12px; color: var(--ink-2); overflow-wrap: anywhere; }
 .diag-fix { font: 600 11.5px/1.5 var(--font-mono); color: var(--acc); overflow-wrap: anywhere; }
+
+/* ---------------- storage-mode indicator ---------------- */
+.mode-chip {
+  font: 700 9.5px/1 var(--font-ui); letter-spacing: .12em; white-space: nowrap;
+  padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line-2);
+}
+.mode-online { color: var(--ok); border-color: rgba(61,220,151,.45); background: rgba(61,220,151,.09); }
+.mode-offline { color: var(--amber); border-color: rgba(255,176,58,.45); background: rgba(255,176,58,.09); }
+.mode-error { color: var(--bad); border-color: rgba(255,92,106,.45); background: rgba(255,92,106,.09); }
+.mode-local { color: var(--ink-2); }
+.local-warn { color: var(--amber); font-weight: 700; }
+@media (max-width: 760px) { .mode-chip { font-size: 8.5px; padding: 4px 7px; } }

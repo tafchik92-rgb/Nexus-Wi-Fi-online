@@ -152,6 +152,22 @@ outstanding amount is always `price − allocated`.
   the stacked cash-flow chart carries a legend so color never encodes alone.
 - CSV exports quote every field and guard against formula injection.
 
+## 🔄 Why two devices might not match
+
+Every till shows a badge in the header saying where its data lives:
+
+| Badge | Meaning |
+|---|---|
+| **☁ SHARED SHOP** | Connected — every till sees the same sales |
+| **☁ OFFLINE** | Cloud mode, no connection — sales are queued and sync on reconnect |
+| **◆ THIS DEVICE ONLY** | Local mode — records stay on this device and do **not** sync |
+
+If a phone and a desktop disagree, check that badge first: **THIS DEVICE ONLY**
+on either one explains it. Cloud mode needs `autoConnect: true` in
+`firebase-config.js` (the default) *and* a reachable backend. The login screen
+in local mode offers **join the shared shop**, and cloud mode offers **work on
+this device only** — so a backend outage never stops the shop selling.
+
 ## ☁️ Cloud mode (Firebase)
 
 **[▸ Deploy the backend in Cloud Shell](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2Ftafchik92-rgb%2FNexus-Wi-Fi-online&cloudshell_workspace=.&cloudshell_open_in_editor=deploy.sh)** → then run `bash deploy.sh`

@@ -33,7 +33,11 @@ function showLogin() {
     $("#setup-lead").innerHTML = `Setting up a <b>new cloud shop</b>. This creates the founding administrator on your Firebase project — it only works while no staff exist there. Stuck on an error? <button type="button" class="link-btn" data-action="diagnose">Run backend diagnostics</button>.`;
     $("#st-site-wrap").hidden = false;
     $("#setup-demo-wrap").hidden = true;
-    $("#login-hint").innerHTML = `Cloud mode — <button type="button" class="link-btn" data-action="show-setup">set up a new shop</button> · <button type="button" class="link-btn" data-action="diagnose">backend diagnostics</button>`;
+    $("#login-hint").innerHTML =
+      `<b>Shared shop</b> — signing in against your Firebase project.<br>` +
+      `<button type="button" class="link-btn" data-action="show-setup">set up a new shop</button> · ` +
+      `<button type="button" class="link-btn" data-action="diagnose">diagnostics</button> · ` +
+      `<button type="button" class="link-btn" data-action="use-local">work on this device only</button>`;
     setTimeout(() => $(ui.showSetup ? "#st-name" : "#lg-code").focus(), 40);
     return;
   }
@@ -58,8 +62,13 @@ function showLogin() {
 
   // Show the codes that actually work — the one thing the operator needs.
   const codes = usable.slice(0, 4).map((u) => `<b>${esc(u.code)}</b>`).join(" · ");
+  const preset = typeof window !== "undefined" ? window.NEXUS_FIREBASE_CONFIG : null;
+  const offer = (preset && preset.apiKey && typeof Backend !== "undefined" && !Backend.enabled)
+    ? `<br><span class="local-warn">This device only — sales here do not reach your other tills.</span> ` +
+      `<button type="button" class="link-btn" data-action="use-cloud">join the shared shop</button>`
+    : "";
   $("#login-hint").innerHTML =
-    `${usable.length} account(s) can sign in — ${codes}${usable.length > 4 ? " …" : ""}`;
+    `${usable.length} account(s) can sign in — ${codes}${usable.length > 4 ? " …" : ""}${offer}`;
   setTimeout(() => $("#lg-code").focus(), 40);
 }
 
@@ -273,6 +282,7 @@ function routeFromHash() {
    ------------------------------------------------------------ */
 function renderAll() {
   if (!session) return;
+  renderModeChip();
   renderDemoBanner();
   if (isAdmin()) {
     renderTiles();
@@ -296,6 +306,28 @@ function renderAll() {
 
 // A demo store must be unmistakable — nobody should mistake sample sales
 // for real takings, and leaving must not mean hunting through settings.
+// Says plainly whether this device is on the shared shop or its own store —
+// the difference between "my sales are missing" and "we are not synced".
+function renderModeChip() {
+  const chip = $("#mode-chip");
+  if (!chip) return;
+  if (typeof Backend === "undefined" || !Backend.enabled) {
+    chip.className = "mode-chip mode-local";
+    chip.textContent = "◆ THIS DEVICE ONLY";
+    chip.title = "Local mode — sales stay on this device and do not sync";
+    return;
+  }
+  const state = Backend.status === "online" && Backend.ready ? "online"
+    : Backend.status === "error" ? "error" : "offline";
+  chip.className = "mode-chip mode-" + state;
+  chip.textContent = state === "online" ? "☁ SHARED SHOP"
+    : state === "error" ? "☁ SYNC ERROR"
+    : `☁ OFFLINE${Backend.pending ? ` · ${Backend.pending} QUEUED` : ""}`;
+  chip.title = state === "online"
+    ? "Cloud mode — every till sees the same sales"
+    : "Cloud mode, no connection — sales are queued and sync when the link returns";
+}
+
 function renderDemoBanner() {
   const on = isDemoData();
   const chip = $("#demo-chip");
@@ -742,6 +774,33 @@ function wire() {
     }
     if (action === "show-setup") { ui.showSetup = true; showLogin(); return; }
     if (action === "diagnose") return runDiagnostics();
+    if (action === "use-local") {
+      if (!(await confirmDlg(
+        "Work on this device only? Sales recorded here stay on this device and will NOT appear on your other tills until you reconnect to the shared shop."))) return;
+      if (Backend.ready) await Backend.signOut().catch(() => {});
+      Backend.saveConfig(Backend.config, false);
+      Backend.ready = false;
+      clearSession();
+      db = loadDb();
+      ui.showSetup = false;
+      showLogin();
+      return toast("Local mode — this device keeps its own records", "err");
+    }
+    if (action === "use-cloud") {
+      if (!Backend.config) return toast("No Firebase project configured", "err");
+      Backend.saveConfig(Backend.config, true);
+      clearSession();
+      try {
+        await Backend.connect();
+        toast("Connected to the shared shop — sign in to continue");
+      } catch (e) {
+        Backend.enabled = false;
+        toast(cloudError(e), "err");
+      }
+      ui.showSetup = false;
+      showLogin();
+      return;
+    }
     if (action === "exit-demo") return exitDemo();
     if (action === "seed") {
       if (cloudMode()) return toast("Demo data is local-mode only — it would overwrite your cloud shop", "err");
@@ -817,17 +876,19 @@ function registerServiceWorker() {
   // Cloud mode always re-authenticates on load: a stale local session must
   // never stand in for a server-issued token.
   if (typeof Backend !== "undefined" && Backend.enabled) {
-    clearSession();
     try {
       await Backend.connect();
+      // Only now discard any local session: cloud mode must re-authenticate
+      // against the server rather than trust a session stored on the device.
+      clearSession();
       showLogin();
       return;
     } catch (e) {
-      // Unreachable backend must not become a login nobody can pass —
-      // drop back to local mode and say why.
+      // Unreachable backend must not become a login nobody can pass, and
+      // must not sign out staff who were working locally — fall back and say so.
       Backend.enabled = false;
       Backend.ready = false;
-      toast(`Cloud unavailable — working locally. ${cloudError(e)}`, "err");
+      toast(`Shared shop unreachable — this device is working on its own. ${cloudError(e)}`, "err");
     }
   }
 
