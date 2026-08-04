@@ -555,6 +555,15 @@ function wire() {
     // Realtime Database is a different product; this app stores in Firestore.
     if (config.databaseURL && !config.projectId) delete config.databaseURL;
     config.useEmulators = $("#cloud-emulators").checked;
+    // Emulators only exist on the machine running them. Ticking this on a
+    // phone or a hosted page points the app at a 127.0.0.1 that is not there.
+    const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+    if (config.useEmulators && !local) {
+      if (!(await confirmDlg(
+        `"Use local emulators" is ticked, but this page is served from ${location.hostname || "a file"} — not your development machine. The app would try to reach emulators on 127.0.0.1 and fail. Connect to the real ${config.projectId} project instead?`))) return;
+      config.useEmulators = false;
+      $("#cloud-emulators").checked = false;
+    }
     Backend.saveConfig(config, true);
     try {
       await Backend.connect();
@@ -576,6 +585,9 @@ function wire() {
     toast("Back in local mode");
   });
   $("#btn-cloud-push").addEventListener("click", pushLocalToCloud);
+  $("#cloud-emulators").addEventListener("change", (e) => {
+    $("#cloud-emu-warn").hidden = !e.target.checked;
+  });
 
   // credit search
   $("#credit-q").addEventListener("input", renderAdminCredit);

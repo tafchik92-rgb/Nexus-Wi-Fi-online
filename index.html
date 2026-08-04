@@ -406,6 +406,7 @@
   "appId": "…"
 }'></textarea>
                 <label class="check"><input type="checkbox" id="cloud-emulators" /> Use local emulators (development)</label>
+                <p class="hint" id="cloud-emu-warn" hidden>⚠ Leave this <b>unticked</b> for a real shop — it points the app at emulators on this machine, not at your Firebase project.</p>
                 <button class="btn btn-primary" type="submit">⇄ CONNECT</button>
                 <p class="hint">Deploy <b>firestore.rules</b> and the <b>functions/</b> directory first — see <b>BACKEND.md</b>. Authorization is enforced server-side; this config is public by design.</p>
               </form>

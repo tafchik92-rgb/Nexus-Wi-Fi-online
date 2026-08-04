@@ -670,6 +670,9 @@ function renderCloud() {
     delete shown.useEmulators;
     box.value = JSON.stringify(shown, null, 2);
   }
+  const emuBox = $("#cloud-emulators");
+  const warn = $("#cloud-emu-warn");
+  if (emuBox && warn) warn.hidden = !emuBox.checked;
   $("#btn-cloud-diag").disabled = !(Backend.config || (typeof window !== "undefined" && window.NEXUS_FIREBASE_CONFIG));
   $("#btn-cloud-disable").hidden = !on;
   $("#btn-cloud-push").disabled = !cloudMode();
