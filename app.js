@@ -201,10 +201,16 @@ async function logout() {
    Shell — role-aware chrome
    ------------------------------------------------------------ */
 function enterApp() {
+  const user = currentUser();
+  // Without this the next line throws on a null user, and it throws *after*
+  // the shell has been revealed — leaving every panel empty and every tab
+  // showing, because the markup is still in its default state. A blank till
+  // that says nothing is the worst possible failure here.
+  if (!user) return strandedSession();
+
   endBoot();
   $("#login").hidden = true;
   $("#app").hidden = false;
-  const user = currentUser();
   const admin = isAdmin();
 
   $("#user-name").textContent = user.name;
@@ -251,6 +257,20 @@ function renderSiteScope() {
   }
   sel.value = session.siteId || "";
   sel.disabled = sites.length <= 1 && !admin;
+}
+
+// Signed in, but the staff directory does not contain this person. Either the
+// listeners were refused, or the record was deleted mid-session. Say which,
+// and get them back to a screen with a button on it.
+function strandedSession() {
+  const reason = Backend.status === "error"
+    ? `The shop refused to send your staff record: ${Backend.error}`
+    : "Your staff record was not found in the shop — it may have been removed.";
+  Backend.signOut().catch(() => {});
+  db = emptyDb();
+  clearSession();
+  showLogin();
+  toast(`${reason} Sign in again, or run diagnostics.`, "err");
 }
 
 function setTab(tab, sub) {

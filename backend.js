@@ -368,7 +368,15 @@ const Backend = {
     // these are the very claims the security rules evaluate, so a query built
     // from them cannot ask for more than the rules will grant.
     const tok = await this.sdk.auth.getIdTokenResult(user);
-    const role = tok.claims.role === "admin" ? "admin" : "agent";
+    // No role claim means the rules will refuse even the staff directory, and
+    // the app would come up signed in but empty. Fail loudly instead: this is
+    // a token or deployment problem, not something to degrade around.
+    if (tok.claims.role !== "admin" && tok.claims.role !== "agent") {
+      throw new Error(
+        "Your sign-in carries no role, so the shop will not release any records. " +
+        "Sign out and in again; if it keeps happening the signIn function needs redeploying.");
+    }
+    const role = tok.claims.role;
     const mySites = Array.isArray(tok.claims.siteIds) ? tok.claims.siteIds : [];
 
     const plan = this.syncPlan(role, mySites, user.uid);
@@ -631,19 +639,46 @@ const Backend = {
     const host = cfg.emulatorHost || "127.0.0.1";
     const key = encodeURIComponent(cfg.apiKey);
 
+    // What the security rules will actually see for whoever is signed in.
+    // Everything reads as empty when this is wrong, which looks like a dozen
+    // other faults until you can see it.
+    if (this.auth && this.auth.currentUser) {
+      try {
+        const tok = await this.sdk.auth.getIdTokenResult(this.auth.currentUser);
+        const role = tok.claims.role;
+        const sites = Array.isArray(tok.claims.siteIds) ? tok.claims.siteIds.length : 0;
+        if (role === "admin" || role === "agent") {
+          add("Your access token", "ok", `role ${role}${role === "agent" ? ` · ${sites} site(s)` : " · every site"}`, "");
+        } else {
+          add("Your access token", "fail", "carries no role claim — the rules will release nothing",
+            "Sign out and in again. If it persists, redeploy the functions: bash deploy.sh");
+        }
+      } catch (e) {
+        add("Your access token", "warn", "Could not be read: " + e.message, "");
+      }
+    }
+
     // --- Firestore database exists? ---
+    // Probe the database this app is actually configured for. Checking
+    // "(default)" on a project whose Firestore is a named database reports a
+    // missing database that was never meant to exist — a false alarm that
+    // sends the operator off to create a second, empty one.
+    const dbId = cfg.firestoreDatabaseId || "(default)";
     try {
       const url = emu
-        ? `http://${host}:8080/v1/projects/${cfg.projectId}/databases/(default)/documents/__diag__/probe`
-        : `https://firestore.googleapis.com/v1/projects/${cfg.projectId}/databases/(default)/documents/__diag__/probe?key=${key}`;
+        ? `http://${host}:8080/v1/projects/${cfg.projectId}/databases/${encodeURIComponent(dbId)}/documents/__diag__/probe`
+        : `https://firestore.googleapis.com/v1/projects/${cfg.projectId}/databases/${encodeURIComponent(dbId)}/documents/__diag__/probe?key=${key}`;
       const r = await fetch(url);
       const j = await r.json().catch(() => ({}));
       const msg = (j && j.error && j.error.message) || "";
       if (r.status === 404 && /does not exist/i.test(msg)) {
-        add("Firestore database", "fail", "This project has no Firestore database",
-          "Firebase console → Build → Firestore Database → Create database (production mode)");
+        add("Firestore database", "fail", `No database "${dbId}" in this project`,
+          dbId === "(default)"
+            ? "Firebase console → Build → Firestore Database → Create database (production mode)"
+            : `Either create it, or correct firestoreDatabaseId in firebase-config.js to name the database this project really has.`);
       } else {
-        add("Firestore database", "ok", emu ? "emulator reachable" : "exists — security rules active", "");
+        add("Firestore database", "ok",
+          emu ? `emulator reachable (${dbId})` : `"${dbId}" exists — security rules active`, "");
       }
     } catch (e) {
       add("Firestore database", "warn", "Could not reach Firestore: " + e.message, "Check the connection and try again");
