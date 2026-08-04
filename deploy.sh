@@ -123,6 +123,21 @@ ok "done"
 
 # ---------- optional hosting build ----------
 if [ "$WITH_HOSTING" = "1" ]; then
+  # The service worker serves the app shell from cache, and its cache name
+  # carries a build stamp so a deploy replaces the old shell rather than
+  # sitting behind it. Only `npm run build` substituted that placeholder, so
+  # deploying the plain static files left it constant — and tills kept running
+  # the previous version. Stamp it here, whichever way we deploy.
+  say "Stamping the service-worker cache version"
+  node -e '
+    const fs = require("fs");
+    const stamp = process.argv[1];
+    const s = fs.readFileSync("sw.js", "utf8")
+      .replace(/const VERSION = "nexus-pos-[^"]*";/, `const VERSION = "nexus-pos-${stamp}";`);
+    fs.writeFileSync("sw.js", s);
+  ' "$(date -u +%Y%m%d%H%M%S)"
+  ok "sw.js stamped"
+
   say "Building the web app"
   npm install --no-audit --no-fund --silent
   npm run build --silent

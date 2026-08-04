@@ -161,12 +161,20 @@ const Backend = {
     if (!this.config) throw new Error("No Firebase configuration saved.");
     this.status = "connecting";
     const loadMod = (url) => new Function("url", "return import(url)")(url);
-    const [appMod, authMod, storeMod, fnMod] = await Promise.all([
-      loadMod(SDK("app")), loadMod(SDK("auth")), loadMod(SDK("firestore")), loadMod(SDK("functions")),
+
+    // Firestore is by far the biggest module — around three quarters of the
+    // SDK — and nothing on the sign-in screen touches it. Start it downloading
+    // now but do not wait for it: signing in needs only app, auth and
+    // functions, so the login form appears while the rest is still arriving.
+    const storeLoading = loadMod(SDK("firestore"));
+    storeLoading.catch(() => {});   // handled by ensureStore; don't warn twice
+
+    const [appMod, authMod, fnMod] = await Promise.all([
+      loadMod(SDK("app")), loadMod(SDK("auth")), loadMod(SDK("functions")),
     ]).catch(() => {
       throw new Error("Could not load the Firebase SDK — this page may block external scripts, or you are offline for the first run.");
     });
-    this.sdk = { app: appMod, auth: authMod, store: storeMod, fn: fnMod };
+    this.sdk = { app: appMod, auth: authMod, store: null, fn: fnMod };
 
     this.app = appMod.getApps().length ? appMod.getApp() : appMod.initializeApp(this.config);
 
@@ -184,6 +192,27 @@ const Backend = {
       } catch (_) { /* already initialised for this app, or no storage at all */ }
     }
     if (!this.auth) this.auth = authMod.getAuth(this.app);
+
+    this.fns = fnMod.getFunctions(this.app, this.config.functionsRegion || undefined);
+
+    if (this.config.useEmulators) {
+      const host = this.config.emulatorHost || "127.0.0.1";
+      authMod.connectAuthEmulator(this.auth, `http://${host}:9099`, { disableWarnings: true });
+      fnMod.connectFunctionsEmulator(this.fns, host, 5001);
+    }
+
+    // Wire Firestore up as soon as its module lands, without holding the
+    // sign-in screen. Everything that touches it awaits ensureStore first.
+    this._storeReady = storeLoading.then((storeMod) => this._initStore(storeMod));
+    this._storeReady.catch(() => {});
+
+    this.ready = true;
+    this.status = "online";
+    return true;
+  },
+
+  _initStore(storeMod) {
+    this.sdk.store = storeMod;
 
     // Firestore may live in a NAMED database rather than "(default)" —
     // connecting to the wrong one simply times out with no useful error.
@@ -210,18 +239,23 @@ const Backend = {
         this.db = storeMod.getFirestore(this.app, dbId);   // already initialised
       }
     }
-    this.fns = fnMod.getFunctions(this.app, this.config.functionsRegion || undefined);
 
     if (this.config.useEmulators) {
-      const host = this.config.emulatorHost || "127.0.0.1";
-      authMod.connectAuthEmulator(this.auth, `http://${host}:9099`, { disableWarnings: true });
-      storeMod.connectFirestoreEmulator(this.db, host, 8080);
-      fnMod.connectFunctionsEmulator(this.fns, host, 5001);
+      storeMod.connectFirestoreEmulator(this.db, this.config.emulatorHost || "127.0.0.1", 8080);
     }
+    return storeMod;
+  },
 
-    this.ready = true;
-    this.status = "online";
-    return true;
+  // Everything that reads or writes the database goes through here first, so
+  // the deferred Firestore load is invisible to callers.
+  async ensureStore() {
+    if (this.db) return this.sdk.store;
+    if (!this._storeReady) throw new Error("Not connected to the shop.");
+    try {
+      return await this._storeReady;
+    } catch (_) {
+      throw new Error("Could not load the database module — check the connection and reload.");
+    }
   },
 
   call(name, payload) {
@@ -264,8 +298,12 @@ const Backend = {
 
   /* ---------------- sync ---------------- */
   // Mirrors every collection into `db` and re-renders on change.
-  startSync(onChange) {
-    const { store } = this.sdk;
+  //
+  // This is the gate the deferred Firestore load sits behind: nothing reads or
+  // writes the database before sync starts, so awaiting the module here covers
+  // put, drop, newId and the rest without making them all async.
+  async startSync(onChange) {
+    const store = await this.ensureStore();
     this.stopSync();
     let firstPass = 0;
     const total = Object.keys(COLLECTIONS).length;
@@ -296,8 +334,16 @@ const Backend = {
   },
 
   /* ---------------- writes ---------------- */
+  // put, drop and newId are only reachable once someone is signed in, which
+  // means startSync has already awaited the Firestore module. The guard is
+  // there so a mistake shows up as a clear message rather than a null deref.
+  ready4store() {
+    if (!this.db || !this.sdk.store) throw new Error("The database is still loading — try again in a moment.");
+    return this.sdk.store;
+  },
+
   put(key, obj) {
-    const { store } = this.sdk;
+    const store = this.ready4store();
     const coll = COLLECTIONS[key];
     if (!coll) return Promise.resolve();
     const data = Object.assign({}, obj);
@@ -310,7 +356,7 @@ const Backend = {
   },
 
   drop(key, id) {
-    const { store } = this.sdk;
+    const store = this.ready4store();
     const coll = COLLECTIONS[key];
     if (!coll) return Promise.resolve();
     store.deleteDoc(store.doc(this.db, coll, id))
@@ -319,7 +365,7 @@ const Backend = {
   },
 
   newId() {
-    const { store } = this.sdk;
+    const store = this.ready4store();
     return store.doc(store.collection(this.db, "_ids")).id;
   },
 
@@ -338,6 +384,7 @@ const Backend = {
   // the attempt but never answered.
   async claimAndSell(siteId, type, makeSale) {
     if (!this.ready) throw new Error("NO_CONNECTION");
+    await this.ensureStore();
     // Refuse before touching the server when the device knows it is offline.
     // A transaction cannot be queued, but it can sit retrying for a minute
     // with the agent staring at a spinner — and worse, commit later, after
@@ -541,7 +588,7 @@ const Backend = {
   // kept its own records. Staff PINs cannot come along — they were hashed for
   // local use only — so agents get fresh PINs an admin hands out.
   async pushLocalData(local, onProgress) {
-    const { store } = this.sdk;
+    const store = await this.ensureStore();
     const report = { sites: 0, staff: 0, vouchers: 0, accounts: 0, sales: 0, payments: 0, closings: 0, pins: [] };
     const me = currentUser();
 

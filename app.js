@@ -24,7 +24,20 @@ const ui = {
 const hasConfig = () =>
   !!(Backend.config && Backend.config.apiKey && Backend.config.projectId);
 
+// The boot card owns the screen until we know which card to show. Every path
+// out of boot goes through showLogin or enterApp, so both must retire it —
+// otherwise a slow or failed start leaves the operator staring at nothing.
+const bootSays = (html) => {
+  const note = $("#boot-note");
+  if (note) note.innerHTML = html;
+};
+const endBoot = () => {
+  const boot = $("#boot");
+  if (boot) boot.hidden = true;
+};
+
 function showLogin() {
+  endBoot();
   $("#login").hidden = false;
   $("#app").hidden = true;
   $("#login-err").hidden = true;
@@ -185,6 +198,7 @@ function logout() {
    Shell — role-aware chrome
    ------------------------------------------------------------ */
 function enterApp() {
+  endBoot();
   $("#login").hidden = true;
   $("#app").hidden = false;
   const user = currentUser();
@@ -662,45 +676,74 @@ function registerServiceWorker() {
 async function connectAndRestore() {
   if (!Backend.config) { showLogin(); return; }
 
+  // A slow first launch is a big download, not a hang. Say so, and offer the
+  // escape hatch if it drags on, rather than showing a frozen screen.
+  bootSays(`Loading the terminal…<br><span class="dim">first launch downloads it once</span>`);
+  const slow = setTimeout(() => bootSays(
+    `Still loading — a slow connection makes the first launch long.<br>` +
+    `<button type="button" class="link-btn" data-action="diagnose">run diagnostics</button>`), 6000);
+
   try {
     if (!Backend.ready) await Backend.connect();
   } catch (e) {
+    clearTimeout(slow);
     Backend.ready = false;
     $("#offline-detail").textContent = cloudError(e);
     showLogin();
     return;
   }
+  clearTimeout(slow);
 
-  const uid = await Backend.restoreSession();
-  if (!uid) { showLogin(); return; }
+  // Anything below this point failing must still land on a usable screen.
+  try {
+    const uid = await Backend.restoreSession();
+    if (!uid) { showLogin(); return; }
 
-  await Backend.startSync(() => renderAll());
-  const me = userById(uid);
-  if (!me || me.status !== "active") {
-    // Removed or suspended while signed in — or the listeners were refused.
+    bootSays("Signing you back in…");
+    await Backend.startSync(() => renderAll());
+    const me = userById(uid);
+    if (!me || me.status !== "active") {
+      // Removed or suspended while signed in — or the listeners were refused.
+      await Backend.signOut().catch(() => {});
+      db = emptyDb();
+      clearSession();
+      showLogin();
+      if (Backend.status === "error") toast(`Could not read the shop: ${Backend.error}`, "err");
+      return;
+    }
+
+    session = { userId: uid, siteId: savedScope() };
+    enterApp();
+    routeFromHash();
+  } catch (e) {
+    // Don't strand the operator on the boot card over a restore that failed.
     await Backend.signOut().catch(() => {});
     db = emptyDb();
     clearSession();
     showLogin();
-    if (Backend.status === "error") toast(`Could not read the shop: ${Backend.error}`, "err");
-    return;
+    toast(`Could not restore your session — sign in again. ${cloudError(e)}`, "err");
   }
-
-  session = { userId: uid, siteId: savedScope() };
-  enterApp();
-  routeFromHash();
 }
 
 (async function boot() {
-  registerServiceWorker();
-  Backend.loadConfig();
-  wire();
-  tickClock();
-  setInterval(tickClock, 1000);
+  try {
+    registerServiceWorker();
+    Backend.loadConfig();
+    wire();
+    tickClock();
+    setInterval(tickClock, 1000);
 
-  const period = monthKey(new Date());
-  $("#rep-period").value = period;
-  $("#me-period").value = period;
+    const period = monthKey(new Date());
+    $("#rep-period").value = period;
+    $("#me-period").value = period;
 
-  await connectAndRestore();
+    await connectAndRestore();
+  } catch (e) {
+    // Last line of defence: a blank screen tells the operator nothing and
+    // gives them nothing to do. Always land somewhere with a button on it.
+    console.error("Boot failed:", e);
+    const detail = $("#offline-detail");
+    if (detail) detail.textContent = cloudError(e);
+    try { showLogin(); } catch (_) { endBoot(); }
+  }
 })();

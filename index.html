@@ -24,6 +24,25 @@
   <div class="fx fx-glow fx-glow-b" aria-hidden="true"></div>
   <div class="fx fx-scan" aria-hidden="true"></div>
 
+  <!-- Visible from the first paint, before any script runs. The shop lives on
+       the server, so there is a wait before anything can be signed into —
+       staring at an empty screen is what that wait used to look like. -->
+  <div id="boot" class="login">
+    <div class="login-box panel boot-box">
+      <svg class="login-mark" viewBox="0 0 40 40" aria-hidden="true">
+        <path d="M20 3 34.7 11.5v17L20 37 5.3 28.5v-17Z" fill="none" stroke="currentColor" stroke-width="1.6" opacity=".55"/>
+        <g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+          <path d="M11.5 18.5a12 12 0 0 1 17 0"/><path d="M15.2 22.6a6.8 6.8 0 0 1 9.6 0"/>
+        </g>
+        <circle cx="20" cy="27.4" r="2.2" fill="currentColor"/>
+      </svg>
+      <h1 class="login-title">NEXUS<span class="brand-sep">//</span>POS</h1>
+      <p class="login-sub">CONNECTING TO THE SHOP</p>
+      <div class="boot-bar" aria-hidden="true"><i></i></div>
+      <p class="boot-note" id="boot-note">Reaching the server…</p>
+    </div>
+  </div>
+
   <!-- ============================ LOGIN ============================ -->
   <div id="login" class="login" hidden>
     <!-- returning staff -->

@@ -813,3 +813,30 @@ html { overflow-x: hidden; }
 .mode-offline { color: var(--amber); border-color: rgba(255,176,58,.45); background: rgba(255,176,58,.09); }
 .mode-error { color: var(--bad); border-color: rgba(255,92,106,.45); background: rgba(255,92,106,.09); }
 @media (max-width: 760px) { .mode-chip { font-size: 8.5px; padding: 4px 7px; } }
+
+/* ---------------- boot state ----------------
+   Shown from the first paint until the app knows whether to offer a
+   sign-in or restore a session. Everything here is plain CSS on markup
+   that ships in the HTML, so it appears without waiting for any script. */
+.boot-box { text-align: center; }
+.boot-bar {
+  position: relative; height: 3px; margin: 22px 0 14px; overflow: hidden;
+  background: rgba(56, 225, 255, .12); border-radius: 999px;
+}
+.boot-bar i {
+  position: absolute; inset: 0 auto 0 0; width: 40%;
+  background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+  animation: boot-sweep 1.15s ease-in-out infinite;
+}
+@keyframes boot-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+.boot-note {
+  margin: 0; font: 500 11.5px/1.6 var(--font-mono); color: var(--ink-2);
+  min-height: 2.6em;
+}
+.boot-note .link-btn { font-size: 11.5px; }
+@media (prefers-reduced-motion: reduce) {
+  .boot-bar i { animation: none; width: 100%; opacity: .5; }
+}
