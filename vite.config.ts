@@ -27,10 +27,10 @@ const copyStaticScripts = () => ({
       const html = fs.readFileSync(htmlOut, 'utf8');
       const assets = [...html.matchAll(/(?:href|src)="\.?\/?(assets\/[^"]+)"/g)]
         .map((m) => `"./${m[1]}"`);
-      if (assets.length) {
-        fs.writeFileSync(swOut,
-          fs.readFileSync(swOut, 'utf8').replace('/*__BUILD_ASSETS__*/', assets.join(', ')));
-      }
+      let sw = fs.readFileSync(swOut, 'utf8');
+      if (assets.length) sw = sw.replace('/*__BUILD_ASSETS__*/', assets.join(', '));
+      sw = sw.replace('/*__BUILD_TIME__*/', Date.now().toString(36));
+      fs.writeFileSync(swOut, sw);
     }
 
     const icons = path.resolve(__dirname, 'icons');

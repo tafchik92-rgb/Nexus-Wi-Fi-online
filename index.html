@@ -418,6 +418,7 @@
               <p class="hint" id="cloud-push-note"></p>
               <div class="gen-row">
                 <button class="btn btn-ghost" id="btn-cloud-push">⇪ PUSH LOCAL DATA TO CLOUD</button>
+                <button class="btn btn-ghost" id="btn-cloud-diag" data-action="diagnose">⚙ RUN DIAGNOSTICS</button>
                 <button class="btn btn-danger btn-xs" id="btn-cloud-disable" hidden>DISCONNECT</button>
               </div>
               <p class="hint">Pushing is one-way and safe to repeat — records keep their ids, so a second push updates rather than duplicates. Staff PINs never leave this device; imported agents arrive with a fresh PIN for you to hand out.</p>
@@ -626,6 +627,18 @@
       <div class="modal-actions">
         <button class="btn btn-ghost" id="pin-cancel">CANCEL</button>
         <button class="btn btn-primary" id="pin-save">SAVE</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-diag" hidden>
+    <div class="modal-box modal-wide panel" role="dialog" aria-modal="true" aria-labelledby="diag-title">
+      <header class="panel-head"><h2 id="diag-title">⚙ BACKEND DIAGNOSTICS</h2><span id="diag-summary"></span></header>
+      <p class="modal-sub">Probes your Firebase project from this device and names anything broken.</p>
+      <ul class="diag-list" id="diag-list"><li class="diag-row"><span class="dim">Running checks…</span></li></ul>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="diag-rerun">↻ RUN AGAIN</button>
+        <button class="btn btn-primary" id="diag-close">DONE</button>
       </div>
     </div>
   </div>

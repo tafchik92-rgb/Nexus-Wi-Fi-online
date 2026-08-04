@@ -9,7 +9,7 @@
    SDK always go to the network, so nothing stale is ever served for
    live data or authentication.
    ============================================================ */
-const VERSION = "nexus-pos-v2";
+const VERSION = "nexus-pos-/*__BUILD_TIME__*/";
 const SHELL = [
   "./", "./index.html", "./styles.css",
   "./firebase-config.js", "./importer.js", "./backend.js",

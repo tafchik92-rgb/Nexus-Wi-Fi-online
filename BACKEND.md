@@ -260,6 +260,12 @@ instead of when their token expires.
 
 ## Troubleshooting
 
+**First stop: the app can diagnose itself.** On the cloud login/setup screen
+(or Admin → CLOUD) choose **RUN DIAGNOSTICS** — it probes the project from the
+browser and names the broken piece: database missing, Authentication off,
+functions not deployed, blocked, or crashing. `deploy.sh` runs the same
+verification from the server side at the end of every deploy.
+
 **Sign-in or setup fails with `internal`.** A function crashed rather than
 returning a real error. The functions now translate the common causes into
 plain instructions, so re-deploy first (`bash deploy.sh`) and read the new

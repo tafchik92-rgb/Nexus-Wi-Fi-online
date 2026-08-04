@@ -226,6 +226,105 @@ const Backend = {
     return held.length ? held[0] : null;
   },
 
+  /* ---------------- diagnostics ---------------- */
+  // Probes the project from the browser and names the exact broken piece.
+  // Exists because every one of these faults surfaces in the UI as a bare
+  // "internal", which points at nothing.
+  async diagnose() {
+    const cfg = this.config || {};
+    const out = [];
+    const add = (name, level, detail, fix) => out.push({ name, level, detail, fix: fix || "" });
+
+    if (!cfg.projectId || !cfg.apiKey) {
+      add("Configuration", "fail", "No Firebase config loaded", "Paste the web config in Admin → CLOUD, or fill in firebase-config.js");
+      return out;
+    }
+    add("Project", "ok", cfg.projectId + (cfg.useEmulators ? " (emulators)" : ""), "");
+
+    const emu = !!cfg.useEmulators;
+    const host = cfg.emulatorHost || "127.0.0.1";
+    const key = encodeURIComponent(cfg.apiKey);
+
+    // --- Firestore database exists? ---
+    try {
+      const url = emu
+        ? `http://${host}:8080/v1/projects/${cfg.projectId}/databases/(default)/documents/__diag__/probe`
+        : `https://firestore.googleapis.com/v1/projects/${cfg.projectId}/databases/(default)/documents/__diag__/probe?key=${key}`;
+      const r = await fetch(url);
+      const j = await r.json().catch(() => ({}));
+      const msg = (j && j.error && j.error.message) || "";
+      if (r.status === 404 && /does not exist/i.test(msg)) {
+        add("Firestore database", "fail", "This project has no Firestore database",
+          "Firebase console → Build → Firestore Database → Create database (production mode)");
+      } else {
+        add("Firestore database", "ok", emu ? "emulator reachable" : "exists — security rules active", "");
+      }
+    } catch (e) {
+      add("Firestore database", "warn", "Could not reach Firestore: " + e.message, "Check the connection and try again");
+    }
+
+    // --- Authentication service enabled? ---
+    // signInWithCustomToken with a junk token: INVALID_CUSTOM_TOKEN proves the
+    // service is on; CONFIGURATION_NOT_FOUND proves it is not. Creates nothing.
+    try {
+      const url = emu
+        ? `http://${host}:9099/identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${key}`
+        : `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${key}`;
+      const r = await fetch(url, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: "diagnostic-probe", returnSecureToken: true }),
+      });
+      const j = await r.json().catch(() => ({}));
+      const msg = (j && j.error && j.error.message) || "";
+      if (/CONFIGURATION_NOT_FOUND/i.test(msg)) {
+        add("Authentication", "fail", "Authentication is not enabled on this project",
+          "Firebase console → Authentication → Get started → enable the Anonymous provider");
+      } else if (r.ok || /INVALID_CUSTOM_TOKEN|MISSING_CUSTOM_TOKEN|INVALID_LOGIN_CREDENTIALS/i.test(msg)) {
+        add("Authentication", "ok", "service enabled", "");
+      } else {
+        add("Authentication", "warn", msg || `HTTP ${r.status}`, "");
+      }
+    } catch (e) {
+      add("Authentication", "warn", "Could not reach the Auth service: " + e.message, "");
+    }
+
+    // --- Each Cloud Function ---
+    const region = cfg.functionsRegion || "us-central1";
+    const base = emu
+      ? `http://${host}:5001/${cfg.projectId}/${region}`
+      : `https://${region}-${cfg.projectId}.cloudfunctions.net`;
+    for (const fn of ["bootstrap", "signIn", "createStaff", "changePin", "resetPin", "reserveVouchers", "releaseReservations"]) {
+      try {
+        const r = await fetch(`${base}/${fn}`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: '{"data":{}}',
+        });
+        const j = await r.json().catch(() => null);
+        const ran = !!(j && j.error && (j.error.status || j.error.message));
+        const em = ran ? String(j.error.message || j.error.status || "") : "";
+        if (ran && /INTERNAL/i.test(String(j.error.status || ""))) {
+          // the function executed and crashed — the log has the stack
+          add(`Function ${fn}`, "fail", em || "Crashes when called",
+            "See the stack: npx firebase-tools functions:log --only " + fn);
+        } else if (ran || r.ok) {
+          // any callable-protocol reply (invalid-argument, unauthenticated, …)
+          // proves the function is deployed, reachable and executing
+          add(`Function ${fn}`, "ok", em || `HTTP ${r.status}`, "");
+        } else if (r.status === 404) {
+          add(`Function ${fn}`, "fail", "Not deployed", "Run: bash deploy.sh");
+        } else if (r.status === 403 || r.status === 401) {
+          add(`Function ${fn}`, "fail", "Deployed, but callers are blocked (invoker permission)",
+            "Re-run bash deploy.sh — it now grants public invoker access — or allow unauthenticated invocations on the Cloud Run service");
+        } else {
+          add(`Function ${fn}`, "warn", `Unexpected HTTP ${r.status}`, "");
+        }
+      } catch (e) {
+        add(`Function ${fn}`, "fail", "Unreachable from this browser — not deployed, or invocation blocked before CORS headers are sent",
+          "Run: bash deploy.sh, then: npx firebase-tools functions:list");
+      }
+    }
+    return out;
+  },
+
   /* ---------------- migration ---------------- */
   // Pushes this browser's local data up. Staff PINs cannot come along —
   // they were hashed for local use only — so agents get fresh PINs.

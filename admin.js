@@ -670,6 +670,7 @@ function renderCloud() {
     delete shown.useEmulators;
     box.value = JSON.stringify(shown, null, 2);
   }
+  $("#btn-cloud-diag").disabled = !(Backend.config || (typeof window !== "undefined" && window.NEXUS_FIREBASE_CONFIG));
   $("#btn-cloud-disable").hidden = !on;
   $("#btn-cloud-push").disabled = !cloudMode();
   const local = readLocalStore();

@@ -30,10 +30,10 @@ function showLogin() {
   if (typeof Backend !== "undefined" && Backend.enabled) {
     $("#setup-box").hidden = !ui.showSetup;
     $("#login-box").hidden = !!ui.showSetup;
-    $("#setup-lead").innerHTML = `Setting up a <b>new cloud shop</b>. This creates the founding administrator on your Firebase project — it only works while no staff exist there.`;
+    $("#setup-lead").innerHTML = `Setting up a <b>new cloud shop</b>. This creates the founding administrator on your Firebase project — it only works while no staff exist there. Stuck on an error? <button type="button" class="link-btn" data-action="diagnose">Run backend diagnostics</button>.`;
     $("#st-site-wrap").hidden = false;
     $("#setup-demo-wrap").hidden = true;
-    $("#login-hint").innerHTML = `Cloud mode — <button type="button" class="link-btn" data-action="show-setup">set up a new shop</button>`;
+    $("#login-hint").innerHTML = `Cloud mode — <button type="button" class="link-btn" data-action="show-setup">set up a new shop</button> · <button type="button" class="link-btn" data-action="diagnose">backend diagnostics</button>`;
     setTimeout(() => $(ui.showSetup ? "#st-name" : "#lg-code").focus(), 40);
     return;
   }
@@ -158,7 +158,40 @@ async function attemptLogin(code, pin) {
 // Firebase errors arrive prefixed; show the message the function actually sent.
 function cloudError(e) {
   const msg = String((e && e.message) || e || "Unknown error").replace(/^.*?\/\s*/, "");
+  // A bare "internal" means the call never produced a real answer — the
+  // function is missing, blocked, or crashed. Diagnostics can tell which.
+  if (/^internal$/i.test(msg.trim())) {
+    return "Server error (internal) — the backend call never completed. Run backend diagnostics to see exactly what is missing.";
+  }
   return msg || "Could not reach the server.";
+}
+
+const DIAG_ICON = { ok: "✓", warn: "!", fail: "✗" };
+async function runDiagnostics() {
+  const modal = $("#modal-diag");
+  const list = $("#diag-list");
+  modal.hidden = false;
+  list.innerHTML = `<li class="diag-row"><span class="dim">Running checks…</span></li>`;
+  $("#diag-summary").textContent = "";
+  try {
+    if (!Backend.config) Backend.loadConfig();
+    const results = await Backend.diagnose();
+    const fails = results.filter((r) => r.level === "fail").length;
+    $("#diag-summary").innerHTML = fails === 0
+      ? `<span class="chip chip-ok"><i></i>ALL CLEAR</span>`
+      : `<span class="chip chip-sold"><i></i>${fails} PROBLEM${fails === 1 ? "" : "S"}</span>`;
+    list.innerHTML = results.map((r) => `
+      <li class="diag-row diag-${r.level}">
+        <span class="diag-icon">${DIAG_ICON[r.level] || "?"}</span>
+        <span class="diag-body">
+          <b>${esc(r.name)}</b>
+          <span class="diag-detail">${esc(r.detail)}</span>
+          ${r.fix ? `<span class="diag-fix">→ ${esc(r.fix)}</span>` : ""}
+        </span>
+      </li>`).join("");
+  } catch (e) {
+    list.innerHTML = `<li class="diag-row diag-fail"><span class="diag-icon">✗</span><span class="diag-body"><b>Diagnostics failed</b><span class="diag-detail">${esc(String(e && e.message || e))}</span></span></li>`;
+  }
 }
 
 function logout() {
@@ -584,6 +617,8 @@ function wire() {
     openSettle(e.target.dataset.id);
   });
   $("#receipt-done").addEventListener("click", () => { $("#modal-receipt").hidden = true; });
+  $("#diag-close").addEventListener("click", () => { $("#modal-diag").hidden = true; });
+  $("#diag-rerun").addEventListener("click", runDiagnostics);
   $("#pin-cancel").addEventListener("click", () => { $("#modal-pin").hidden = true; });
 
   $$(".modal").forEach((m) => m.addEventListener("click", (e) => {
@@ -686,6 +721,7 @@ function wire() {
       toast(`Voucher ${v.code} purged`);
     }
     if (action === "show-setup") { ui.showSetup = true; showLogin(); return; }
+    if (action === "diagnose") return runDiagnostics();
     if (action === "exit-demo") return exitDemo();
     if (action === "seed") {
       if (cloudMode()) return toast("Demo data is local-mode only — it would overwrite your cloud shop", "err");
