@@ -27,6 +27,68 @@ const COLLECTIONS = {
   closings: "closings",
 };
 
+/* ------------------------------------------------------------
+   The Firebase console hands you JavaScript, not JSON:
+
+     const firebaseConfig = { apiKey: "…", appId: "…" };
+
+   Unquoted keys, a declaration prefix, a trailing semicolon — none of
+   which JSON.parse accepts. Take it as pasted and normalise it, rather
+   than making the operator hand-convert and risk a typo.
+   ------------------------------------------------------------ */
+// Removes // and /* */ comments without touching quoted text — a naive
+// regex would eat the "//" in "https://…" and truncate the value.
+function stripComments(src) {
+  let out = "";
+  let quote = null;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i], next = src[i + 1];
+    if (quote) {
+      out += c;
+      if (c === "\\") { out += next === undefined ? "" : next; i++; }
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; out += c; continue; }
+    if (c === "/" && next === "/") { while (i < src.length && src[i] !== "\n") i++; out += "\n"; continue; }
+    if (c === "/" && next === "*") { i += 2; while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++; i++; continue; }
+    out += c;
+  }
+  return out;
+}
+
+function parseFirebaseConfig(text) {
+  let raw = String(text || "").trim();
+  if (!raw) throw new Error("Paste the firebaseConfig object from the Firebase console.");
+
+  // keep only the outermost { … } block
+  const open = raw.indexOf("{");
+  const close = raw.lastIndexOf("}");
+  if (open === -1 || close <= open) {
+    throw new Error("That does not look like a config object — it should contain { … }.");
+  }
+  raw = raw.slice(open, close + 1);
+  raw = stripComments(raw);
+
+  const attempts = [
+    raw,
+    // quote bare keys, convert single to double quotes, drop trailing commas
+    raw.replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":')
+       .replace(/:\s*'([^']*)'/g, ': "$1"')
+       .replace(/,(\s*[}\]])/g, "$1"),
+  ];
+  // an unquoted appId (1:234:web:abc) is the usual paste error — quote it
+  attempts.push(attempts[1].replace(/:\s*([0-9][\w:.-]*[A-Za-z][\w:.-]*)\s*([,}])/g, ': "$1"$2'));
+
+  for (const candidate of attempts) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (_) { /* try the next normalisation */ }
+  }
+  throw new Error("Could not read that config. Copy it again from Firebase console → Project settings → Your apps.");
+}
+
 const Backend = {
   enabled: false,
   ready: false,

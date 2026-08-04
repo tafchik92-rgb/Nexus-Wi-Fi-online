@@ -547,9 +547,13 @@ function wire() {
     e.preventDefault();
     let config;
     try {
-      config = JSON.parse($("#cloud-config").value.trim());
-    } catch (_) { return toast("That is not valid JSON — paste the firebaseConfig object", "err"); }
-    if (!config.projectId || !config.apiKey) return toast("Config needs at least apiKey and projectId", "err");
+      config = parseFirebaseConfig($("#cloud-config").value);
+    } catch (err) { return toast(err.message, "err"); }
+    if (!config.projectId || !config.apiKey) {
+      return toast("Config needs at least apiKey and projectId — copy the whole object", "err");
+    }
+    // Realtime Database is a different product; this app stores in Firestore.
+    if (config.databaseURL && !config.projectId) delete config.databaseURL;
     config.useEmulators = $("#cloud-emulators").checked;
     Backend.saveConfig(config, true);
     try {

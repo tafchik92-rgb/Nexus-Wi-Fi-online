@@ -105,7 +105,10 @@ output; leave it at `.` if you deploy the plain static files as-is.
 
 Two ways:
 
-- **Per device:** Admin → **CLOUD** → paste the `firebaseConfig` JSON → **CONNECT**.
+- **Per device:** Admin → **CLOUD** → paste the config → **CONNECT**. Paste it
+  exactly as the console shows it — the `const firebaseConfig = { … };`
+  JavaScript form is accepted, unquoted keys and all; it does not need
+  converting to JSON.
 - **For every device at once:** fill in **`firebase-config.js`** and redeploy. The
   config is then pre-filled in the CLOUD panel; set `autoConnect: true` in that
   file once the rules and functions are live and tills connect on load.
@@ -287,6 +290,12 @@ message. The usual culprits, in order:
 | No Firestore database yet | Console → Build → Firestore Database → **Create database** (production mode) |
 | Authentication not enabled | Console → Authentication → Get started → enable **Anonymous** |
 | Functions not deployed | `bash deploy.sh` — the app calls `bootstrap` and `signIn` by name |
+
+**`databaseURL` in your config is for Realtime Database, a different product.**
+This app stores everything in **Cloud Firestore**. The key is harmless if
+present, but if you created a Realtime Database expecting it to be the app's
+store, create a Firestore database as well (console → Build → Firestore
+Database → Create database) — nothing works without it.
 
 To see the real stack behind any failure:
 
