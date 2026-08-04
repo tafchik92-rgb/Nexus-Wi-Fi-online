@@ -236,6 +236,7 @@ function routeFromHash() {
    ------------------------------------------------------------ */
 function renderAll() {
   if (!session) return;
+  renderDemoBanner();
   if (isAdmin()) {
     renderTiles();
     renderChart();
@@ -254,6 +255,29 @@ function renderAll() {
     renderAgentCredit();
     renderMonthEnd();
   }
+}
+
+// A demo store must be unmistakable — nobody should mistake sample sales
+// for real takings, and leaving must not mean hunting through settings.
+function renderDemoBanner() {
+  const on = isDemoData();
+  const chip = $("#demo-chip");
+  const bar = $("#demo-bar");
+  chip.hidden = !on;
+  bar.hidden = !(on && isAdmin());
+  if (on && !isAdmin()) chip.title = "Sample data — an administrator can clear it";
+}
+
+async function exitDemo() {
+  if (!isAdmin()) return toast("Only an administrator can clear the demo data", "err");
+  if (!(await confirmDlg(
+    "Clear the demo shop and start fresh? Every sample site, staff account, voucher and sale is deleted, and you'll set up your own administrator next."))) return;
+  storage.removeItem(DB_KEY);
+  storage.removeItem(LEGACY_KEY);
+  clearSession();
+  db = emptyDb();
+  showLogin();
+  toast("Demo data cleared — set up your shop");
 }
 
 function tickClock() {
@@ -284,6 +308,7 @@ async function seedDemo() {
   const old = new Date(Date.now() - 40 * 864e5).toISOString();
 
   const fresh = emptyDb();
+  fresh.demo = true;                       // so the app can offer a clean exit
   const sites = [
     { id: uid(), name: "Gloy Mine Camp", code: "S-01", status: "active", createdAt: old },
     { id: uid(), name: "Riverside Kiosk", code: "S-02", status: "active", createdAt: old },
@@ -661,6 +686,7 @@ function wire() {
       toast(`Voucher ${v.code} purged`);
     }
     if (action === "show-setup") { ui.showSetup = true; showLogin(); return; }
+    if (action === "exit-demo") return exitDemo();
     if (action === "seed") {
       if (cloudMode()) return toast("Demo data is local-mode only — it would overwrite your cloud shop", "err");
       if (db.users.length || db.sales.length) {

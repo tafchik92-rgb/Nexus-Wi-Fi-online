@@ -87,8 +87,12 @@ const storage = (() => {
    Data model
    ------------------------------------------------------------ */
 const emptyDb = () => ({
-  v: 2, sites: [], users: [], vouchers: [], accounts: [], sales: [], payments: [], closings: [],
+  v: 2, demo: false,
+  sites: [], users: [], vouchers: [], accounts: [], sales: [], payments: [], closings: [],
 });
+
+// True while the store is the sample shop rather than real trade.
+const isDemoData = () => !!db.demo && !cloudMode();
 
 let db = emptyDb();
 let _rev = 0;

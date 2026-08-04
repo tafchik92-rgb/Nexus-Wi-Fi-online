@@ -98,6 +98,11 @@ and a mix of settled and outstanding credit:
 
 Change PINs from the **⚿ PIN** button; admins can reset any staff PIN.
 
+**Leaving the demo:** a demo store is labelled throughout — an amber
+**DEMO DATA** chip in the header, and a banner for administrators. Either one
+clears the sample shop and drops you at first-run setup to create your own
+administrator. Agents see the label but cannot wipe the store.
+
 ## 🗂 Data model (`localStorage` key `nexuspos.v2`)
 
 ```js

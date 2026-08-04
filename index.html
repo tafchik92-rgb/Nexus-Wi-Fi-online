@@ -112,6 +112,7 @@
         <button class="btn btn-ghost btn-xs" id="btn-logout">⏻ SIGN OUT</button>
       </div>
       <div class="statusbar">
+        <button class="demo-chip" id="demo-chip" data-action="exit-demo" hidden>◆ DEMO DATA — TAP TO CLEAR</button>
         <span class="status-item"><span class="status-dot" aria-hidden="true"></span>ONLINE</span>
         <span class="status-item status-clock"><span id="clock-time">--:--:--</span></span>
         <span class="status-item status-date" id="clock-date"></span>
@@ -119,6 +120,14 @@
     </header>
 
     <main class="shell">
+
+      <div class="demo-bar" id="demo-bar" hidden>
+        <div>
+          <b>You are using the demo shop.</b>
+          These sites, staff, vouchers and sales are samples — safe to explore, and not your real takings.
+        </div>
+        <button class="btn btn-danger btn-xs" data-action="exit-demo">✕ CLEAR DEMO &amp; START FRESH</button>
+      </div>
 
       <!-- ========================== ADMIN ========================== -->
       <section id="view-admin" class="view is-active" role="tabpanel" aria-label="Admin">

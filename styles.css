@@ -727,3 +727,81 @@ textarea.field { resize: vertical; }
 /* Author display rules outrank the UA's [hidden] rule, so hidden buttons and
    flex rows stayed visible. Restore hiding for every element. */
 [hidden] { display: none !important; }
+
+/* ============================================================
+   Mobile pass — the header tab row was wider than a phone screen,
+   which stretched the layout viewport and pushed every fixed
+   overlay (modals, toasts) off-centre.
+   ============================================================ */
+html { overflow-x: hidden; }
+
+/* A modal taller than the screen must scroll, not clip its buttons */
+.modal { overflow-y: auto; overscroll-behavior: contain; }
+.modal-actions { flex-wrap: wrap; }
+
+@media (max-width: 760px) {
+  .top { padding: 10px 12px; gap: 8px; }
+  .brand-mark { width: 32px; height: 32px; }
+  .brand-copy h1 { font-size: 17px; letter-spacing: .12em; }
+
+  /* let the tabs share the row and wrap instead of forcing width */
+  .tabs { order: 3; width: 100%; margin-left: 0; flex-wrap: wrap; gap: 4px; }
+  .tab { flex: 1 1 auto; min-width: 0; padding: 9px 8px; font-size: 10.5px; letter-spacing: .1em; text-align: center; justify-content: center; }
+  .tab-index { display: none; }
+
+  .subnav { gap: 6px; margin-bottom: 16px; }
+  .subtab { padding: 7px 11px; font-size: 10px; letter-spacing: .1em; }
+
+  .topright { gap: 6px; }
+  .btn-xs { padding: 7px 9px; font-size: 10px; letter-spacing: .1em; }
+  .field-site { min-width: 0; max-width: 46vw; }
+
+  .shell { padding: 16px 12px 32px; }
+  .panel { padding: 15px 14px 16px; }
+  .panel-head { gap: 8px; }
+  .panel-actions { margin-left: 0; width: 100%; flex-wrap: wrap; }
+  .panel-actions .field { flex: 1 1 auto; min-width: 0; }
+
+  /* modals: full-width, scrollable, stacked actions */
+  .modal { align-items: flex-start; padding: 12px; }
+  .modal-box, .modal-narrow, .modal-wide { width: 100%; max-width: 100%; margin: 8px 0 24px; }
+  .modal-actions .btn { flex: 1 1 140px; }
+  .code-plate { font-size: 17px; letter-spacing: .08em; padding: 14px 10px; }
+  .summary dd { font-size: 12.5px; }
+  .summary-total dd { font-size: 21px; }
+
+  /* toasts span the width rather than sitting off the edge */
+  .toasts { left: 12px; right: 12px; bottom: 12px; }
+  .toast { min-width: 0; max-width: none; }
+
+  .filters .field, .filters input[type="search"].field { min-width: 0; flex: 1 1 130px; }
+  .settle-open { max-height: 120px; }
+  .login-box { padding: 24px 18px 20px; }
+}
+
+@media (max-width: 420px) {
+  .tab { flex: 1 1 45%; }
+  .status-clock { font-size: 12px; }
+  .tile-value { font-size: 22px; }
+}
+
+/* ---------------- demo-data indicator ---------------- */
+.demo-chip {
+  font: 700 10px/1 var(--font-ui); letter-spacing: .14em; white-space: nowrap;
+  color: var(--amber); background: rgba(255, 176, 58, .1);
+  border: 1px solid rgba(255, 176, 58, .45); border-radius: 999px;
+  padding: 5px 11px; cursor: pointer;
+}
+.demo-chip:hover { background: rgba(255, 176, 58, .2); }
+.demo-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  margin-bottom: 18px; padding: 12px 16px;
+  font-size: 12.5px; line-height: 1.5; color: var(--ink-2);
+  background: rgba(255, 176, 58, .07); border-left: 3px solid var(--amber);
+}
+.demo-bar b { color: var(--amber); }
+@media (max-width: 760px) {
+  .demo-chip { font-size: 9px; letter-spacing: .1em; padding: 4px 8px; }
+  .demo-bar { font-size: 12px; padding: 10px 12px; }
+  .demo-bar .btn { width: 100%; }
+}
