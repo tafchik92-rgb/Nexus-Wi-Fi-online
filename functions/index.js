@@ -1,7 +1,12 @@
 /* ============================================================
    NEXUS//POS — Cloud Functions
    Everything the client must not be trusted with: PIN verification,
-   staff provisioning, role claims, and atomic voucher reservation.
+   staff provisioning and role claims.
+
+   Selling is not here on purpose. A till claims a voucher with a Firestore
+   transaction the security rules police, which is one round trip instead of
+   two and puts the guarantee in the database rather than in code a client
+   could route around.
    ============================================================ */
 "use strict";
 
@@ -16,7 +21,18 @@ initializeApp();
 // The project's Firestore may be a NAMED database rather than "(default)".
 // The Admin SDK defaults to "(default)", so without this the functions read
 // and write a database nobody else is using.
-const DATABASE_ID = process.env.FIRESTORE_DATABASE_ID || "ai-studio-nexuswifi-c56b2e13-8e06-41aa-bd40-1bd12d4dfe0f";
+//
+// FIRESTORE_DATABASE_ID overrides it whenever it is set at all — including to
+// an empty string, which means "(default)".
+//
+// Under the emulator the default flips to "(default)": an emulated project has
+// only that one database, so carrying the production id across would put these
+// functions in a database the tests and the client never look at, and every
+// check would fail as a missing document rather than a real fault.
+const PROD_DATABASE_ID = "ai-studio-nexuswifi-c56b2e13-8e06-41aa-bd40-1bd12d4dfe0f";
+const DATABASE_ID = process.env.FIRESTORE_DATABASE_ID !== undefined
+  ? process.env.FIRESTORE_DATABASE_ID
+  : (process.env.FUNCTIONS_EMULATOR === "true" ? "" : PROD_DATABASE_ID);
 const dbf = () => (DATABASE_ID ? getFirestore(DATABASE_ID) : getFirestore());
 
 /* ------------------------------------------------------------
@@ -263,76 +279,4 @@ exports.resetPin = onCall(guard(async (req) => {
   await db.collection("staffAuth").doc(staffId).set(
     Object.assign(makePinRecord(pin), { failedAttempts: 0, lockedUntil: null }), { merge: true });
   return { ok: true, pin };
-}));
-
-/* ------------------------------------------------------------
-   reserveVouchers — how a till stays sellable offline.
-
-   A device claims a block of vouchers while it still has a connection;
-   the rules then let it sell only what it holds. Two tills can never be
-   handed the same code, so going offline cannot double-sell.
-   ------------------------------------------------------------ */
-exports.reserveVouchers = onCall(guard(async (req) => {
-  if (!req.auth) throw new HttpsError("unauthenticated", "Sign in first.");
-  const db = dbf();
-  const uid = req.auth.uid;
-  const siteId = clean(req.data && req.data.siteId, 60);
-  const type = clean(req.data && req.data.type, 8);
-  const want = Math.min(Math.max(parseInt((req.data && req.data.count) || 10, 10) || 10, 1), 50);
-
-  if (!siteId || !["V5", "V10", "REC"].includes(type)) {
-    throw new HttpsError("invalid-argument", "siteId and a valid voucher type are required.");
-  }
-
-  const staff = await db.collection("staff").doc(uid).get();
-  if (!staff.exists || staff.data().status !== "active") {
-    throw new HttpsError("permission-denied", "Inactive account.");
-  }
-  const s = staff.data();
-  if (s.role !== "admin" && !(s.siteIds || []).includes(siteId)) {
-    throw new HttpsError("permission-denied", "You are not assigned to that site.");
-  }
-
-  // Anything already held by this device still counts toward the block.
-  const mine = await db.collection("vouchers")
-    .where("siteId", "==", siteId).where("type", "==", type)
-    .where("status", "==", "available").where("reservedBy", "==", uid)
-    .limit(want).get();
-
-  const shortfall = want - mine.size;
-  const reserved = mine.docs.map((d) => Object.assign({ id: d.id }, d.data()));
-  if (shortfall <= 0) return { ok: true, reserved: reserved.map(stripVoucher), claimed: 0 };
-
-  // Claim unheld stock in a transaction so concurrent tills can't overlap.
-  const claimed = await db.runTransaction(async (tx) => {
-    const free = await tx.get(db.collection("vouchers")
-      .where("siteId", "==", siteId).where("type", "==", type)
-      .where("status", "==", "available").where("reservedBy", "==", null)
-      .limit(shortfall));
-    const out = [];
-    free.docs.forEach((d) => {
-      tx.update(d.ref, { reservedBy: uid, reservedAt: FieldValue.serverTimestamp() });
-      out.push(Object.assign({ id: d.id }, d.data(), { reservedBy: uid }));
-    });
-    return out;
-  });
-
-  return { ok: true, reserved: reserved.concat(claimed).map(stripVoucher), claimed: claimed.length };
-}));
-
-function stripVoucher(v) {
-  return { id: v.id, code: v.code, type: v.type, siteId: v.siteId, status: v.status, batch: v.batch || "", reservedBy: v.reservedBy || null };
-}
-
-// Hand unsold reservations back to the pool (sign-out, or shift change).
-exports.releaseReservations = onCall(guard(async (req) => {
-  if (!req.auth) throw new HttpsError("unauthenticated", "Sign in first.");
-  const db = dbf();
-  const snap = await db.collection("vouchers")
-    .where("reservedBy", "==", req.auth.uid).where("status", "==", "available").limit(400).get();
-  if (snap.empty) return { ok: true, released: 0 };
-  const batch = db.batch();
-  snap.docs.forEach((d) => batch.update(d.ref, { reservedBy: null, reservedAt: null }));
-  await batch.commit();
-  return { ok: true, released: snap.size };
 }));

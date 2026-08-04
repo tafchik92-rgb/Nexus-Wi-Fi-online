@@ -1,8 +1,10 @@
 # NEXUS//POS — Wi-Fi Shop Point-of-Sale
 
 A dynamic, sci-fi-styled point-of-sale platform for a multi-site Wi-Fi voucher
-business. **Zero dependencies, no build step, no server** — a handful of static
-files that run anywhere a browser runs. All data persists in `localStorage`.
+business. The front end is a handful of dependency-free static files; the shop
+itself — staff, stock, sales, debts — lives in **one shared Firebase project**,
+so the desk, the phone and the tablet always agree. Setup is in
+**[BACKEND.md](BACKEND.md)**.
 
 ## ✨ Features
 
@@ -19,11 +21,10 @@ Staff sign in with a **staff code + PIN**. Two roles:
 | Settle customer debts | ✅ | ✅ |
 | Month-end closing | all agents | own only |
 
-In **local mode** this is a UI-level role gate, not a security boundary — the
-data lives in `localStorage`, so anyone with devtools can edit it. In **cloud
-mode** the same login is enforced server-side: the PIN is verified by a Cloud
-Function against a salted scrypt hash the browser can never read, and Firestore
-security rules enforce role and site scope. See **[BACKEND.md](BACKEND.md)**.
+This is enforced server-side, not in the browser: the PIN is verified by a Cloud
+Function against a salted scrypt hash no client can read, and the token it mints
+carries role and site claims that the Firestore security rules read directly.
+Editing anything in devtools widens nothing. See **[BACKEND.md](BACKEND.md)**.
 
 ### Multi-location management
 Open any number of **sites**; vouchers, sales, staff assignments and credit
@@ -73,8 +74,10 @@ detection, batch tracking and per-group stock meters throughout.
 
 The app is installable. Open it in Chrome or Safari on the phone and choose
 **Add to Home Screen** — it then launches full screen with its own icon, and a
-service worker caches the app shell so it **opens with no connection at all**.
-Agents can trade through an outage and sync later.
+service worker caches the app shell so it opens instantly, connection or not.
+
+Reading works from cache through a brief drop. **Issuing a code does not** — see
+*Why selling needs a connection* below.
 
 Installation needs HTTPS (or `localhost`), so deploy it — Firebase Hosting,
 Netlify or GitHub Pages all qualify.
@@ -91,34 +94,25 @@ npx serve .                # or: python3 -m http.server
 
 Deploys as-is to GitHub Pages, Netlify, Firebase Hosting or any static host.
 
-**First run:** with no staff on file the app opens a **first-run setup** screen —
-create the administrator who will run the shop (code + PIN) and name your first
-site, and you are signed straight in.
+**Deploy the backend first** (`bash deploy.sh`) — the app has nothing to talk to
+otherwise. Fill in `firebase-config.js` and every till connects on load; leave it
+blank and the first screen asks for the config.
 
-**Demo shop:** press **LOAD THE DEMO SHOP** on that screen (or open
-`index.html?demo=1`) for two sites, four staff accounts, six weeks of trading,
-and a mix of settled and outstanding credit:
+**First run:** on a project with no staff, choose **set up a new shop** on the
+sign-in screen. That creates the founding administrator (code + PIN) and your
+first site on the server, and signs you in. It refuses to run once any staff
+exist, so it cannot be replayed.
 
-| Account | Code | PIN |
-|---|---|---|
-| Ada Mensah — administrator | `ADM-01` | `1234` |
-| Kira Vance — agent, Gloy Mine Camp | `AG-01` | `1111` |
-| Dex Moreau — agent, Gloy Mine Camp | `AG-02` | `2222` |
-| Zara Chen — agent, Riverside Kiosk | `AG-03` | `3333` |
+Change PINs from the **⚿ PIN** button; admins can reset any staff PIN from
+**Team → RESET PIN**.
 
-Change PINs from the **⚿ PIN** button; admins can reset any staff PIN.
-
-**Leaving the demo:** a demo store is labelled throughout — an amber
-**DEMO DATA** chip in the header, and a banner for administrators. Either one
-clears the sample shop and drops you at first-run setup to create your own
-administrator. Agents see the label but cannot wipe the store.
-
-## 🗂 Data model (`localStorage` key `nexuspos.v2`)
+## 🗂 Data model (Firestore collections)
 
 ```js
 site    { id, name, code, status, createdAt }
-user    { id, name, code, role: "admin"|"agent", salt, pinHash, siteIds[], status }
-voucher { id, code, type: "V5"|"V10"|"REC", siteId, status, batch, uploadedAt }
+staff   { id, name, code, role: "admin"|"agent", siteIds[], status, createdAt }
+staffAuth { salt, hash, algo, failedAttempts, lockedUntil }   ← no client access
+voucher { id, code, type: "V5"|"V10"|"REC", siteId, status, batch, uploadedAt, soldAt }
 account { id, name, phone, siteId, createdAt }
 sale    { id, customer, phone, accountId, voucherId, voucherCode, type, price,
           pay: "cash"|"credit", agentId, agentName, siteId, soldAt /* auto */ }
@@ -127,9 +121,10 @@ payment { id, accountId, amount, method, note, receivedBy, receivedAt,
 closing { id, userId, siteId, period: "YYYY-MM", generatedAt, totals }
 ```
 
-A v1 store is migrated automatically into a single "Main Shop" site.
-Balances are derived from payment allocations — never stored — so a sale's
-outstanding amount is always `price − allocated`.
+PIN material lives in a separate `staffAuth` collection that **no client can
+read or write** — only the Cloud Functions reach it. Balances are derived from
+payment allocations, never stored, so a sale's outstanding amount is always
+`price − allocated`.
 
 ## 📁 Files
 
@@ -137,10 +132,13 @@ outstanding amount is always `price − allocated`.
 |---|---|
 | `index.html` | login screen, app shell, all views and modals |
 | `styles.css` | the sci-fi design system |
-| `core.js` | storage, data model, auth, queries, formatting |
+| `core.js` | data model, session, queries, formatting |
 | `admin.js` | dashboard, team, sites, vouchers, credit oversight, reports |
 | `agent.js` | terminal, credit accounts, settlement, month-end |
-| `app.js` | boot, login, routing, wiring, demo data |
+| `app.js` | boot, login, routing, wiring |
+| `backend.js` | Firebase adapter: sync, sign-in, the transactional voucher claim |
+| `functions/` | Cloud Functions — PIN checks, staff provisioning, role claims |
+| `firestore.rules` | the authorization boundary |
 | `importer.js` | dependency-free `.xlsx` / `.csv` voucher reader |
 
 ## 🎨 Design notes
@@ -152,46 +150,54 @@ outstanding amount is always `price − allocated`.
   the stacked cash-flow chart carries a legend so color never encodes alone.
 - CSV exports quote every field and guard against formula injection.
 
-## 🔄 Why two devices might not match
+## 🔌 Why selling needs a connection
 
-Every till shows a badge in the header saying where its data lives:
+A voucher code may be handed out exactly once. Two tills trading offline would
+each pick from their own idea of what is still in stock, and sooner or later
+hand the same code to two customers — which nobody notices until a customer
+complains or the month-end numbers disagree.
+
+So the till claims stock inside a **Firestore transaction**: the server re-reads
+the voucher before committing, flips it from `available` to `sold`, and writes
+the sale in the same commit. When two tills reach for the last code the server
+picks a winner; the loser silently takes the next one. That is a guarantee no
+amount of client-side cleverness can provide offline, so the till does not
+pretend otherwise.
+
+The header badge always says where things stand:
 
 | Badge | Meaning |
 |---|---|
-| **☁ SHARED SHOP** | Connected — every till sees the same sales |
-| **☁ OFFLINE** | Cloud mode, no connection — sales are queued and sync on reconnect |
-| **◆ THIS DEVICE ONLY** | Local mode — records stay on this device and do **not** sync |
+| **☁ SHARED SHOP** | Connected — every till sees the same stock and sales |
+| **☁ NO CONNECTION** | Reports still read from cache; a code cannot be issued |
+| **☁ SYNC ERROR** | The database refused the connection — run diagnostics |
 
-If a phone and a desktop disagree, check that badge first: **THIS DEVICE ONLY**
-on either one explains it. Cloud mode needs `autoConnect: true` in
-`firebase-config.js` (the default) *and* a reachable backend. The login screen
-in local mode offers **join the shared shop**, and cloud mode offers **work on
-this device only** — so a backend outage never stops the shop selling.
+With no link, pressing **COMPLETE SALE** fails immediately and says *"Nothing was
+charged"* — nothing is written, and no code is burned. Settlements and account
+edits do queue and sync later, because a payment races with nothing.
 
-## ☁️ Cloud mode (Firebase)
+## ☁️ Backend
 
-**[▸ Deploy the backend in Cloud Shell](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2Ftafchik92-rgb%2FNexus-Wi-Fi-online&cloudshell_workspace=.&cloudshell_open_in_editor=deploy.sh)** → then run `bash deploy.sh`
+**[▸ Deploy in Cloud Shell](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2Ftafchik92-rgb%2FNexus-Wi-Fi-online&cloudshell_workspace=.&cloudshell_open_in_editor=deploy.sh)** → then run `bash deploy.sh`
 
-
-The app runs against a real backend when you want one — **Admin → CLOUD**, paste
-your Firebase web config, connect, then push this browser's data up. Full setup,
-deployment and cost notes are in **[BACKEND.md](BACKEND.md)**.
-
-- **Auth**: `signIn` Cloud Function checks the PIN (scrypt, salted, rate-limited
-  with a 5-attempt lockout) and mints a token carrying role + site claims.
+- **Auth**: the `signIn` Cloud Function checks the PIN (scrypt, salted,
+  rate-limited with a 5-attempt lockout) and mints a token carrying role + site
+  claims. PINs never reach the browser.
 - **Authorization**: Firestore rules — cross-site reads denied, prices pinned to
-  the voucher group, sales and payments append-only, PIN material unreachable by
-  every client.
-- **Offline-first**: cached reads and queued writes keep the till trading. Each
-  device reserves a block of vouchers while online and can only sell what it
-  holds, so two offline tills can never issue the same code.
-- **Dual mode**: local mode is untouched and still the default.
+  the voucher group, sales and payments append-only, a voucher only ever going
+  `available → sold` once, PIN material unreachable by every client.
+- **Sessions**: held by Firebase Auth, so a refresh mid-shift does not ask for a
+  PIN again — but the token, and the claims the rules read, still come from the
+  server.
+- **Migration**: a till that traded on an older device-only build can push its
+  history up from **Admin → CLOUD**.
 
-Tested against the Firebase emulators: 25 security-rules checks and 19
-server-side auth checks (`tests/`).
+Tested against the Firebase emulators: **29 security-rules checks** and **21
+server-side auth and selling checks** (`tests/`), including claiming a whole
+pool of vouchers and asserting every code came out exactly once.
 
 ## ⚠️ Scope
 
-Local mode is front-end only: no server, no enforced authorization, and data
-lives in the browser profile that created it — multiple tills do **not** share a
-ledger. Switch to cloud mode for real multi-till operation.
+The shop cannot run without its Firebase backend — that is the point, and
+`BACKEND.md` covers deploying it. Cloud Functions need the Blaze plan; a shop of
+this size sits inside the free monthly allowance.

@@ -65,16 +65,15 @@ service cloud.firestore {
       allow read:   if atMySite(resource.data.siteId);
       allow create: if isAdmin() && request.resource.data.status == 'available';
 
-      // Admins manage stock. An agent may only flip a voucher they hold a
-      // reservation on from available -> sold, at their own site, without
-      // rewriting its identity. Reservations themselves are issued by the
-      // reserveVouchers function, so a client cannot grant itself one.
+      // Admins manage stock. Staff may only flip a voucher from available to
+      // sold, at their own site, without rewriting its identity. The client
+      // does this inside a Firestore transaction, so two tills racing for the
+      // same code cannot both win — the loser retries and takes the next one.
       allow update: if isAdmin()
                     || (
                       atMySite(resource.data.siteId)
                       && resource.data.status == 'available'
                       && request.resource.data.status == 'sold'
-                      && resource.data.reservedBy == uid()
                       && unchanged('code') && unchanged('type') && unchanged('siteId')
                     );
 

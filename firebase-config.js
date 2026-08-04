@@ -1,15 +1,16 @@
 /* ============================================================
-   NEXUS//POS — optional Firebase project defaults
+   NEXUS//POS — which Firebase project this shop runs on
 
-   Fill this in to pre-configure cloud mode for every till, instead of
-   pasting the config into Admin → CLOUD on each device. Delete the file
-   (or leave the config null) to run purely in local mode.
+   The app has no local store: staff, stock and sales all live here. Fill
+   this in and every till that loads the page is pointed at the same shop
+   with nothing to configure. Leave it blank and the first screen asks an
+   operator to paste the config instead.
 
    This is a plain script on purpose — do NOT add `type="module"` or an
    `import` here. The app's other scripts share globals, so a module
    would be scoped away from them, and calling Firebase's initializeApp()
    directly is unnecessary: backend.js initializes the SDK itself, with
-   the offline cache and emulator wiring the POS needs.
+   the read cache and emulator wiring the POS needs.
 
    The web config is public by design — it identifies the project, it
    does not grant access. Authorization comes from firestore.rules and
@@ -27,11 +28,4 @@ window.NEXUS_FIREBASE_CONFIG = {
   // Without this the SDK talks to a database that does not exist and the
   // connection simply times out after ten seconds.
   firestoreDatabaseId: "ai-studio-nexuswifi-c56b2e13-8e06-41aa-bd40-1bd12d4dfe0f",
-
-  // With this true, every till connects to the shared shop on load — which
-  // is what makes a phone and a desktop show the same sales. If the backend
-  // cannot be reached the app says so and falls back to local mode, and the
-  // login screen offers to work offline on purpose, so a server problem can
-  // never stop the shop selling.
-  autoConnect: true,
 };

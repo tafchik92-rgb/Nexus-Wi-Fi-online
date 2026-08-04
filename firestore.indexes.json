@@ -17,7 +17,7 @@
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "reservedBy",
+          "fieldPath": "uploadedAt",
           "order": "ASCENDING"
         }
       ]
@@ -61,20 +61,6 @@
         {
           "fieldPath": "receivedAt",
           "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "vouchers",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "reservedBy",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "status",
-          "order": "ASCENDING"
         }
       ]
     }

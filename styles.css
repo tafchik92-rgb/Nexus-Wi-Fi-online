@@ -520,7 +520,6 @@ textarea.field { resize: vertical; }
    Misc
    ------------------------------------------------------------ */
 .gen-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.admin-foot { display: flex; gap: 10px; justify-content: flex-end; opacity: 0.75; }
 .foot {
   position: relative; z-index: 4; text-align: center; padding: 18px;
   font: 500 10.5px/1 var(--font-mono); letter-spacing: 0.18em; color: var(--ink-3);
@@ -714,13 +713,15 @@ textarea.field { resize: vertical; }
 .setup-lead {
   margin: 0 0 20px; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); text-align: left;
 }
-.setup-or {
-  display: flex; align-items: center; gap: 12px; margin: 20px 0 14px;
-  font: 700 10px/1 var(--font-ui); letter-spacing: .24em; color: var(--ink-3);
-}
-.setup-or::before, .setup-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-#setup-box .btn-big { width: 100%; }
-#setup-box .login-foot { text-align: left; }
+#setup-box .btn-big,
+#connect-box .btn-big,
+#offline-box .btn { width: 100%; }
+#setup-box .login-foot,
+#connect-box .login-foot,
+#offline-box .login-foot { text-align: left; }
+/* the pasted Firebase config needs room to breathe */
+.field-area { min-height: 150px; resize: vertical; font-size: 11.5px; line-height: 1.5; }
+#offline-detail { text-align: left; margin: 0 0 18px; }
 
 .nopin { color: var(--amber); font-weight: 700; letter-spacing: .08em; }
 
@@ -785,27 +786,6 @@ html { overflow-x: hidden; }
   .tile-value { font-size: 22px; }
 }
 
-/* ---------------- demo-data indicator ---------------- */
-.demo-chip {
-  font: 700 10px/1 var(--font-ui); letter-spacing: .14em; white-space: nowrap;
-  color: var(--amber); background: rgba(255, 176, 58, .1);
-  border: 1px solid rgba(255, 176, 58, .45); border-radius: 999px;
-  padding: 5px 11px; cursor: pointer;
-}
-.demo-chip:hover { background: rgba(255, 176, 58, .2); }
-.demo-bar {
-  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
-  margin-bottom: 18px; padding: 12px 16px;
-  font-size: 12.5px; line-height: 1.5; color: var(--ink-2);
-  background: rgba(255, 176, 58, .07); border-left: 3px solid var(--amber);
-}
-.demo-bar b { color: var(--amber); }
-@media (max-width: 760px) {
-  .demo-chip { font-size: 9px; letter-spacing: .1em; padding: 4px 8px; }
-  .demo-bar { font-size: 12px; padding: 10px 12px; }
-  .demo-bar .btn { width: 100%; }
-}
-
 /* ---------------- backend diagnostics ---------------- */
 .diag-list { list-style: none; margin: 0 0 4px; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; }
 .diag-row {
@@ -832,6 +812,4 @@ html { overflow-x: hidden; }
 .mode-online { color: var(--ok); border-color: rgba(61,220,151,.45); background: rgba(61,220,151,.09); }
 .mode-offline { color: var(--amber); border-color: rgba(255,176,58,.45); background: rgba(255,176,58,.09); }
 .mode-error { color: var(--bad); border-color: rgba(255,92,106,.45); background: rgba(255,92,106,.09); }
-.mode-local { color: var(--ink-2); }
-.local-warn { color: var(--amber); font-weight: 700; }
 @media (max-width: 760px) { .mode-chip { font-size: 8.5px; padding: 4px 7px; } }

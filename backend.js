@@ -1,15 +1,18 @@
 /* ============================================================
    NEXUS//POS — cloud backend adapter (Firebase)
 
-   Local mode stays exactly as it was: zero dependencies, localStorage.
-   Cloud mode loads the Firebase SDK on demand, signs in through the
-   signIn Cloud Function (the PIN is never checked in the browser), and
-   mirrors Firestore into the same in-memory `db` the UI already reads —
-   so every view, report and export works unchanged.
+   There is one shop and it lives on the server. This module loads the
+   Firebase SDK, signs in through the signIn Cloud Function (the PIN is
+   never checked in the browser), and mirrors Firestore into the
+   in-memory `db` the UI reads — so every view, report and export works
+   against live shared data.
 
-   Offline: Firestore's persistent cache keeps reads and queued writes
-   working with no connection. Vouchers are sold from a block this device
-   reserved while online, so two tills can never issue the same code.
+   Selling requires a connection. A voucher is claimed inside a Firestore
+   transaction that flips it from available to sold and writes the sale in
+   the same commit, so two tills racing for the last code cannot both win:
+   the loser sees the conflict and takes the next one. Firestore's cache
+   keeps reads and reporting working through a brief drop, but a till that
+   genuinely cannot reach the server says so instead of inventing stock.
    ============================================================ */
 "use strict";
 
@@ -111,7 +114,6 @@ function plainDoc(value, depth = 0) {
 }
 
 const Backend = {
-  enabled: false,
   ready: false,
   status: "offline",        // offline | connecting | online | error
   error: "",
@@ -119,42 +121,38 @@ const Backend = {
   sdk: null,
   app: null, db: null, auth: null, fns: null,
   unsubs: [],
-  reserved: [],             // voucher docs this device holds
   config: null,
+  uid: null,
 
   /* ---------------- config ---------------- */
+  // Which Firebase project this till talks to. A config saved from the
+  // CLOUD panel wins over the one shipped in firebase-config.js, so a shop
+  // can be repointed without re-deploying the app.
   loadConfig() {
     let saved = null;
     try {
       const raw = storage.getItem(CLOUD_KEY);
       if (raw) saved = JSON.parse(raw);
-    } catch (_) { /* unreadable store — fall through to the defaults */ }
+    } catch (_) { /* unreadable store — fall through to the shipped config */ }
 
-    if (saved && saved.config) {
+    if (saved && saved.config && saved.config.apiKey && saved.config.projectId) {
       this.config = saved.config;
-      this.enabled = !!saved.enabled;
       return this.config;
     }
 
-    // No local choice yet: adopt firebase-config.js if it is filled in.
-    // Only autoConnect turns cloud mode on by itself, so an undeployed
-    // backend cannot strand staff at a login they can never pass.
     const preset = typeof window !== "undefined" ? window.NEXUS_FIREBASE_CONFIG : null;
     if (preset && preset.apiKey && preset.projectId) {
       this.config = preset;
-      this.enabled = !!preset.autoConnect;
       return this.config;
     }
     return null;
   },
-  saveConfig(config, enabled) {
+  saveConfig(config) {
     this.config = config;
-    this.enabled = enabled;
-    storage.setItem(CLOUD_KEY, JSON.stringify({ config, enabled }));
+    storage.setItem(CLOUD_KEY, JSON.stringify({ config }));
   },
   clearConfig() {
     this.config = null;
-    this.enabled = false;
     storage.removeItem(CLOUD_KEY);
   },
 
@@ -171,15 +169,31 @@ const Backend = {
     this.sdk = { app: appMod, auth: authMod, store: storeMod, fn: fnMod };
 
     this.app = appMod.getApps().length ? appMod.getApp() : appMod.initializeApp(this.config);
-    this.auth = authMod.getAuth(this.app);
+
+    // Declare persistence at initialization rather than calling
+    // setPersistence() afterwards: auth resolves "who is signed in" once
+    // during init, so a later call has already missed that answer and only
+    // migrates the state forward. Naming the stores here is what keeps an
+    // agent signed in across a refresh mid-shift, whichever SDK build the
+    // page happened to load.
+    const stores = [authMod.indexedDBLocalPersistence, authMod.browserLocalPersistence].filter(Boolean);
+    this.auth = null;
+    if (authMod.initializeAuth && stores.length) {
+      try {
+        this.auth = authMod.initializeAuth(this.app, { persistence: stores });
+      } catch (_) { /* already initialised for this app, or no storage at all */ }
+    }
+    if (!this.auth) this.auth = authMod.getAuth(this.app);
 
     // Firestore may live in a NAMED database rather than "(default)" —
     // connecting to the wrong one simply times out with no useful error.
     const dbId = this.config.firestoreDatabaseId || undefined;
 
-    // Persistent cache keeps the till trading when the link drops. Long
-    // polling is auto-detected because sandboxed frames and restrictive
-    // proxies often break the streaming transport.
+    // The persistent cache is for reads only — it makes the app start fast
+    // and keeps reports and account lookups working through a brief drop.
+    // Selling still needs the server (see claimAndSell). Long polling is
+    // auto-detected because sandboxed frames and restrictive proxies often
+    // break the streaming transport.
     try {
       this.db = storeMod.initializeFirestore(this.app, {
         localCache: storeMod.persistentLocalCache({ tabManager: storeMod.persistentMultipleTabManager() }),
@@ -228,10 +242,23 @@ const Backend = {
     return res.staff;
   },
 
+  // Firebase Auth persists the signed-in staff member across reloads, so a
+  // refresh mid-shift does not mean typing a PIN again. Returns the uid, or
+  // null when nobody is signed in on this device.
+  restoreSession() {
+    if (!this.ready) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const un = this.sdk.auth.onAuthStateChanged(this.auth, (user) => {
+        un();
+        this.uid = user ? user.uid : null;
+        resolve(this.uid);
+      }, () => { un(); resolve(null); });
+    });
+  },
+
   async signOut() {
-    try { await this.call("releaseReservations"); } catch (_) { /* offline: reservations expire naturally */ }
-    this.reserved = [];
     this.stopSync();
+    this.uid = null;
     if (this.auth) await this.sdk.auth.signOut(this.auth);
   },
 
@@ -296,32 +323,92 @@ const Backend = {
     return store.doc(store.collection(this.db, "_ids")).id;
   },
 
-  /* ---------------- voucher reservations ---------------- */
-  // Top the device's block back up whenever it runs low and we're online.
-  async topUp(siteId, type, count = 10) {
-    if (!this.ready || !siteId) return;
-    try {
-      const res = await this.call("reserveVouchers", { siteId, type, count });
-      const held = res.reserved || [];
-      this.reserved = this.reserved.filter((v) => !(v.siteId === siteId && v.type === type)).concat(held);
-    } catch (e) {
-      // Offline or out of stock — fall back to whatever is already held.
-      if (this.status === "online") this.error = e.message;
+  /* ---------------- selling ---------------- */
+  // Claims one voucher and books the sale in a single Firestore transaction.
+  //
+  // The transaction re-reads the voucher on the server before committing, so
+  // if another till took it in the meantime this one aborts and we move to the
+  // next candidate. That is what makes a shared stock safe without reserving
+  // blocks per device: the server, not the client, decides who got the code.
+  //
+  // `makeSale(voucher)` builds the sale record from the voucher we won.
+  // Throws OUT_OF_STOCK when the site has none left, CONTENDED when other
+  // tills kept winning, DENIED when the server refused every attempt,
+  // NO_CONNECTION when there is no link, or TIMEOUT when the server accepted
+  // the attempt but never answered.
+  async claimAndSell(siteId, type, makeSale) {
+    if (!this.ready) throw new Error("NO_CONNECTION");
+    // Refuse before touching the server when the device knows it is offline.
+    // A transaction cannot be queued, but it can sit retrying for a minute
+    // with the agent staring at a spinner — and worse, commit later, after
+    // they have given up and sold a second code to the same customer.
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      throw new Error("NO_CONNECTION");
     }
-  },
+    const { store } = this.sdk;
 
-  // Read the block straight off the synced store, so it stays correct
-  // whether the reservation was made on this device or another session.
-  heldFor(siteId, type) {
-    return db.vouchers.filter((v) =>
-      v.siteId === siteId && v.type === type &&
-      v.status === "available" && v.reservedBy === this.uid);
-  },
+    // A live-looking link that never answers is the nastiest case: the SDK
+    // keeps retrying well past the point the queue has noticed. Cap the wait
+    // so the till says something, and say honestly that the outcome is
+    // unknown rather than pretending nothing happened.
+    const withDeadline = (work) => Promise.race([
+      work,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT")), 12000)),
+    ]);
 
-  takeHeld(siteId, type) {
-    const held = this.heldFor(siteId, type)
+    // Oldest stock first, so codes are issued in the order they were loaded.
+    const queue = () => db.vouchers
+      .filter((v) => v.siteId === siteId && v.type === type && v.status === "available")
       .sort((a, b) => String(a.uploadedAt).localeCompare(String(b.uploadedAt)));
-    return held.length ? held[0] : null;
+
+    const tried = new Set();
+    let denied = 0;
+    // Exhausting the candidates means either "nothing was there" or "everything
+    // we reached for was refused" — and those need different advice.
+    const giveUp = () => {
+      if (!tried.size) return new Error("OUT_OF_STOCK");
+      return new Error(denied === tried.size ? "DENIED" : "CONTENDED");
+    };
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const next = queue().find((v) => !tried.has(v.id));
+      if (!next) throw giveUp();
+      tried.add(next.id);
+
+      const vRef = store.doc(this.db, COLLECTIONS.vouchers, next.id);
+      try {
+        return await withDeadline(store.runTransaction(this.db, async (tx) => {
+          const snap = await tx.get(vRef);
+          if (!snap.exists()) throw new Error("TAKEN");
+          const fresh = Object.assign({ id: next.id }, plainDoc(snap.data()));
+          if (fresh.status !== "available") throw new Error("TAKEN");
+
+          const sale = makeSale(fresh);
+          tx.update(vRef, { status: "sold", soldAt: sale.soldAt });
+          const body = Object.assign({}, sale);
+          delete body.id;
+          tx.set(store.doc(this.db, COLLECTIONS.sales, sale.id), body);
+          return sale;
+        }));
+      } catch (e) {
+        const detail = String((e && e.code) || "") + " " + String((e && e.message) || e);
+        if (/TIMEOUT/.test(detail)) throw e;      // the link is bad; retrying compounds it
+        if (/TAKEN/.test(detail)) continue;                       // we saw it go first
+        if (/aborted|already-exists|contention/i.test(detail)) continue;
+        // Losing the race usually surfaces here: by the time the commit is
+        // evaluated the voucher is already sold, so the rules' "status ==
+        // available" no longer holds and the write comes back denied. Move to
+        // the next code — but count it, because a genuine authorization fault
+        // (wrong site, expired claims) is indistinguishable one attempt at a
+        // time and must not be reported as mere bad luck.
+        if (/permission[-_ ]denied|insufficient permissions/i.test(detail)) { denied++; continue; }
+        if (/unavailable|deadline|network|offline|Failed to (get|fetch)/i.test(detail)) {
+          throw new Error("NO_CONNECTION");
+        }
+        throw e;
+      }
+    }
+    throw giveUp();
   },
 
   /* ---------------- diagnostics ---------------- */
@@ -345,7 +432,7 @@ const Backend = {
     // identically — which the SDK surfaces as a bare "internal".
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
       add("Network", "fail", "This device is offline",
-        "Reconnect and run diagnostics again. Local mode keeps selling meanwhile.");
+        "Reconnect and run diagnostics again — the till needs the server to issue a code.");
       return out;
     }
     if (!cfg.useEmulators) {
@@ -358,7 +445,7 @@ const Backend = {
         add("Network access", "fail",
           "This page cannot make outbound requests" + (framed ? " — it is running inside an embedded preview frame" : ""),
           framed
-            ? "Cloud mode needs direct network access. Open the deployed app in its own browser tab (Firebase Hosting, or npm run build then serve dist/) — an embedded preview blocks these calls."
+            ? "The app needs direct network access. Open the deployed app in its own browser tab (Firebase Hosting, or npm run build then serve dist/) — an embedded preview blocks these calls."
             : "Something between this browser and Google is blocking requests — a content policy, extension, proxy or firewall. Try the deployed app in a normal browser tab, on another network, with extensions disabled.");
         add("Everything below", "warn", "Not checked — every backend call fails the same way while the network is blocked", "");
         return out;
@@ -417,7 +504,7 @@ const Backend = {
     const base = emu
       ? `http://${host}:5001/${cfg.projectId}/${region}`
       : `https://${region}-${cfg.projectId}.cloudfunctions.net`;
-    for (const fn of ["bootstrap", "signIn", "createStaff", "changePin", "resetPin", "reserveVouchers", "releaseReservations"]) {
+    for (const fn of ["bootstrap", "signIn", "createStaff", "changePin", "resetPin"]) {
       try {
         const r = await fetch(`${base}/${fn}`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: '{"data":{}}',
@@ -450,8 +537,9 @@ const Backend = {
   },
 
   /* ---------------- migration ---------------- */
-  // Pushes this browser's local data up. Staff PINs cannot come along —
-  // they were hashed for local use only — so agents get fresh PINs.
+  // One-way import of a till's old device-only store, from back when the app
+  // kept its own records. Staff PINs cannot come along — they were hashed for
+  // local use only — so agents get fresh PINs an admin hands out.
   async pushLocalData(local, onProgress) {
     const { store } = this.sdk;
     const report = { sites: 0, staff: 0, vouchers: 0, accounts: 0, sales: 0, payments: 0, closings: 0, pins: [] };
@@ -493,7 +581,13 @@ const Backend = {
     }
     report.staff = incoming.length;
 
-    await chunk("vouchers", local.vouchers, (v) => Object.assign({}, v, { reservedBy: v.reservedBy || null }));
+    // reservedBy is a leftover from the old per-device reservation scheme
+    await chunk("vouchers", local.vouchers, (v) => {
+      const out = Object.assign({}, v);
+      delete out.reservedBy;
+      delete out.reservedUntil;
+      return out;
+    });
     await chunk("accounts", local.accounts);
     // Sales must be attributed to a real cloud staff id; anything whose agent
     // did not come across is re-attributed to the importing admin.

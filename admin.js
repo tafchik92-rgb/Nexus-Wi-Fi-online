@@ -274,21 +274,11 @@ async function addUser(form) {
   if (db.users.some((u) => u.code === code)) return toast(`Code ${code} is already assigned`, "err");
   if (role === "agent" && siteIds.length === 0) return toast("Assign the agent to at least one site", "err");
 
-  if (cloudMode()) {
-    // The server owns credentials: it hashes the PIN and mints the record.
-    try {
-      await Backend.call("createStaff", { name, code, role, pin, siteIds });
-    } catch (e) { return toast(cloudError(e), "err"); }
-    form.reset(); renderAll();
-    return toast(`${role === "admin" ? "Administrator" : "Agent"} ${name} added as ${code}`);
-  }
-
-  const user = { id: newId(), name, code, role, salt: "", pinHash: "", siteIds, status: "active", createdAt: new Date().toISOString() };
-  await setUserPin(user, pin);
-  db.users.push(user);
-  touch("users", user);
-  save(); renderAll();
-  form.reset();
+  // The server owns credentials: it hashes the PIN and mints the record.
+  try {
+    await Backend.call("createStaff", { name, code, role, pin, siteIds });
+  } catch (e) { return toast(cloudError(e), "err"); }
+  form.reset(); renderAll();
   toast(`${role === "admin" ? "Administrator" : "Agent"} ${name} added as ${code}`);
 }
 
@@ -417,7 +407,7 @@ function addVoucherCodes(type, siteId, codes, batch, uploadedAt) {
     if (!code) continue;
     if (existing.has(code)) { skipped++; continue; }
     existing.add(code);
-    const v = { id: newId(), code, type, siteId, status: "available", batch, uploadedAt, reservedBy: null };
+    const v = { id: newId(), code, type, siteId, status: "available", batch, uploadedAt };
     db.vouchers.push(v);
     touch("vouchers", v);
     added++;
@@ -647,24 +637,22 @@ function exportReportCSV() {
    Cloud backend panel
    ------------------------------------------------------------ */
 function renderCloud() {
-  const on = typeof Backend !== "undefined" && Backend.enabled;
-  const st = !on ? "LOCAL" : (typeof Backend !== "undefined" && Backend.ready ? Backend.status.toUpperCase() : "NOT CONNECTED");
-  const chip = !on ? "chip-off"
-    : (typeof Backend !== "undefined" && Backend.status === "online") ? "chip-ok"
-    : (typeof Backend !== "undefined" && Backend.status === "error") ? "chip-sold" : "chip-v10";
+  const st = Backend.ready ? Backend.status.toUpperCase() : "NOT CONNECTED";
+  const chip = Backend.status === "online" && Backend.ready ? "chip-ok"
+    : Backend.status === "error" ? "chip-sold" : "chip-v10";
 
   $("#cloud-status").innerHTML = `<span class="chip ${chip}"><i></i>${st}</span>` +
-    ((typeof Backend !== "undefined" && Backend.pending) ? ` <span class="chip chip-v10"><i></i>${Backend.pending} QUEUED</span>` : "") +
-    ((typeof Backend !== "undefined" && Backend.error) ? `<span class="cell-sub owed">${esc(Backend.error)}</span>` : "");
+    (Backend.pending ? ` <span class="chip chip-v10"><i></i>${Backend.pending} QUEUED</span>` : "") +
+    (Backend.error ? `<span class="cell-sub owed">${esc(Backend.error)}</span>` : "");
 
   $("#cloud-summary").innerHTML = `
-    <div><dt>MODE</dt><dd>${on ? "CLOUD (Firebase)" : "LOCAL (this browser)"}</dd></div>
-    <div><dt>PROJECT</dt><dd>${on && typeof Backend !== "undefined" && Backend.config ? esc(Backend.config.projectId || "—") : "—"}</dd></div>
+    <div><dt>PROJECT</dt><dd>${esc((Backend.config || {}).projectId || "—")}</dd></div>
+    <div><dt>DATABASE</dt><dd>${esc((Backend.config || {}).firestoreDatabaseId || "(default)")}</dd></div>
     <div><dt>SIGNED IN AS</dt><dd>${esc((currentUser() || {}).name || "—")}</dd></div>
     <div><dt>RECORDS HELD</dt><dd>${db.sites.length} sites · ${db.users.length} staff · ${db.vouchers.length} vouchers · ${db.sales.length} sales</dd></div>`;
 
   const box = $("#cloud-config");
-  if (box && !box.value.trim() && typeof Backend !== "undefined" && Backend.config) {
+  if (box && !box.value.trim() && Backend.config) {
     const shown = Object.assign({}, Backend.config);
     delete shown.autoConnect;
     delete shown.useEmulators;
@@ -674,19 +662,30 @@ function renderCloud() {
   const warn = $("#cloud-emu-warn");
   if (emuBox && warn) warn.hidden = !emuBox.checked;
   $("#btn-cloud-diag").disabled = !(Backend.config || (typeof window !== "undefined" && window.NEXUS_FIREBASE_CONFIG));
-  $("#btn-cloud-disable").hidden = !on;
-  $("#btn-cloud-push").disabled = !cloudMode();
   const local = readLocalStore();
+  $("#btn-cloud-push").disabled = !cloudMode() || !local;
   $("#cloud-push-note").textContent = local
-    ? `Local store holds ${local.sites.length} sites · ${local.users.length} staff · ${local.vouchers.length} vouchers · ${local.sales.length} sales · ${local.payments.length} payments.`
-    : "No local data found in this browser.";
+    ? `This browser still holds an older device-only store: ${local.sites.length} sites · ${local.users.length} staff · ${local.vouchers.length} vouchers · ${local.sales.length} sales · ${local.payments.length} payments.`
+    : "Nothing to import — this browser has no records from the older device-only version.";
 }
 
-// The untouched localStorage copy, still there after switching to cloud mode.
+// Whatever an older, device-only version of the app left in this browser.
+// Read-only: the app no longer writes here, but a till that traded offline
+// before the switch still has its history sitting in localStorage.
 function readLocalStore() {
   try {
     const raw = storage.getItem(DB_KEY);
-    if (!raw) return null;
-    return normalizeDb(JSON.parse(raw));
-  } catch (_) { return null; }
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.users)) return normalizeDb(parsed);
+    }
+  } catch (_) { /* corrupted — try the older key */ }
+  try {
+    const legacy = storage.getItem(LEGACY_KEY);
+    if (legacy) {
+      const parsed = JSON.parse(legacy);
+      if (parsed && Array.isArray(parsed.agents)) return migrateV1(parsed);
+    }
+  } catch (_) { /* ignore */ }
+  return null;
 }

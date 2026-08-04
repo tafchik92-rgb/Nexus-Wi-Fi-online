@@ -141,7 +141,7 @@ $FB deploy --only "$TARGETS" --project "$PROJECT" --non-interactive --force
 # policies can strip it — and the failure then looks like a bare "internal".
 if command -v gcloud >/dev/null; then
   say "Ensuring the functions accept callers"
-  for FN in bootstrap signin createstaff changepin resetpin reservevouchers releasereservations; do
+  for FN in bootstrap signin createstaff changepin resetpin; do
     gcloud functions add-invoker-policy-binding "$FN" \
       --region="us-central1" --member="allUsers" --project "$PROJECT" --quiet >/dev/null 2>&1 || true
   done
@@ -153,7 +153,7 @@ fi
 # is deployed, reachable and executing. Anything else is named right here.
 say "Verifying the deployed functions"
 VERIFY_FAIL=0
-for FN in bootstrap signIn createStaff changePin resetPin reserveVouchers releaseReservations; do
+for FN in bootstrap signIn createStaff changePin resetPin; do
   CODE="$(curl -s -o /tmp/fn_probe -w '%{http_code}' -X POST \
     -H 'Content-Type: application/json' -d '{"data":{}}' \
     "https://us-central1-$PROJECT.cloudfunctions.net/$FN" 2>/dev/null || echo 000)"
@@ -167,7 +167,7 @@ for FN in bootstrap signIn createStaff changePin resetPin reserveVouchers releas
     *)       warn "$FN answered HTTP $CODE: $BODY"; VERIFY_FAIL=1 ;;
   esac
 done
-[ "$VERIFY_FAIL" = "0" ] && ok "all seven functions verified" \
+[ "$VERIFY_FAIL" = "0" ] && ok "all five functions verified" \
   || warn "Some functions failed verification — run the app's Admin → CLOUD → RUN DIAGNOSTICS for details"
 
 # ---------- what now ----------

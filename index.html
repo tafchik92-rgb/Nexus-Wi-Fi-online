@@ -48,7 +48,51 @@
       </form>
 
       <p class="login-hint" id="login-hint"></p>
-      <p class="login-foot">Local-only role gate — data and PIN hashes live in this browser. Not a substitute for server-side authentication.</p>
+      <p class="login-foot">Your PIN is checked on the server and never stored in this browser. Role and site access travel in a signed token the database itself enforces.</p>
+    </div>
+
+    <!-- no Firebase project configured yet -->
+    <div class="login-box panel" id="connect-box" hidden>
+      <svg class="login-mark" viewBox="0 0 40 40" aria-hidden="true">
+        <path d="M20 3 34.7 11.5v17L20 37 5.3 28.5v-17Z" fill="none" stroke="currentColor" stroke-width="1.6" opacity=".55"/>
+        <g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+          <path d="M11.5 18.5a12 12 0 0 1 17 0"/><path d="M15.2 22.6a6.8 6.8 0 0 1 9.6 0"/>
+        </g>
+        <circle cx="20" cy="27.4" r="2.2" fill="currentColor"/>
+      </svg>
+      <h1 class="login-title">NEXUS<span class="brand-sep">//</span>POS</h1>
+      <p class="login-sub">CONNECT THIS TILL</p>
+      <p class="setup-lead">Every till reads and writes the same shop, so this one needs to know where that shop lives. Paste the web app config from <b>Firebase console → Project settings → Your apps</b>.</p>
+
+      <form id="connect-form" class="stack" autocomplete="off">
+        <label class="lbl" for="cn-config">FIREBASE CONFIG</label>
+        <textarea class="field mono field-area" id="cn-config" rows="9" spellcheck="false"
+          placeholder="const firebaseConfig = {&#10;  apiKey: &quot;…&quot;,&#10;  projectId: &quot;…&quot;,&#10;  …&#10;};"></textarea>
+        <button class="btn btn-primary btn-big" type="submit">▸ CONNECT</button>
+      </form>
+      <p class="login-foot">Paste it exactly as the console shows it — unquoted keys and the <span class="mono">const</span> prefix are fine. The backend must be deployed first: <span class="mono">bash deploy.sh</span>.</p>
+    </div>
+
+    <!-- configured, but the shop cannot be reached -->
+    <div class="login-box panel" id="offline-box" hidden>
+      <svg class="login-mark" viewBox="0 0 40 40" aria-hidden="true">
+        <path d="M20 3 34.7 11.5v17L20 37 5.3 28.5v-17Z" fill="none" stroke="currentColor" stroke-width="1.6" opacity=".55"/>
+        <g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+          <path d="M11.5 18.5a12 12 0 0 1 17 0"/><path d="M15.2 22.6a6.8 6.8 0 0 1 9.6 0"/>
+        </g>
+        <circle cx="20" cy="27.4" r="2.2" fill="currentColor"/>
+      </svg>
+      <h1 class="login-title">NEXUS<span class="brand-sep">//</span>POS</h1>
+      <p class="login-sub">SHOP UNREACHABLE</p>
+      <p class="setup-lead">This till cannot reach <b id="offline-project">—</b>. Nobody can sign in and no code can be issued until the link is back — that is deliberate: two tills guessing offline would hand out the same voucher twice.</p>
+      <p class="login-err" id="offline-detail" hidden></p>
+
+      <div class="stack">
+        <button class="btn btn-primary btn-big" data-action="retry-connect">▸ TRY AGAIN</button>
+        <button class="btn btn-ghost" data-action="diagnose">◈ RUN DIAGNOSTICS</button>
+        <button class="btn btn-ghost btn-xs" data-action="change-project">USE A DIFFERENT PROJECT</button>
+      </div>
+      <p class="login-foot">Common causes: no internet on this device, the backend was never deployed, or the page is running inside an embedded preview that blocks outbound requests. Diagnostics names which.</p>
     </div>
 
     <!-- first run: no staff on file yet -->
@@ -78,12 +122,7 @@
         <p class="login-err" id="setup-err" hidden></p>
         <button class="btn btn-primary btn-big" type="submit">▸ CREATE ADMINISTRATOR</button>
       </form>
-
-      <div id="setup-demo-wrap">
-        <div class="setup-or"><span>OR</span></div>
-        <button class="btn btn-ghost btn-big" data-action="seed">⚡ LOAD THE DEMO SHOP</button>
-        <p class="login-foot">The demo shop comes with two sites, four staff logins, six weeks of trading and open credit accounts — handy for a look around before entering real data. It <b>replaces</b> anything already stored here.</p>
-      </div>
+      <p class="login-foot">This only succeeds while the project has no staff at all. Stuck on an error? <button type="button" class="link-btn" data-action="diagnose">Run backend diagnostics</button>.</p>
     </div>
   </div>
 
@@ -121,8 +160,7 @@
         <button class="btn btn-ghost btn-xs" id="btn-logout">⏻ SIGN OUT</button>
       </div>
       <div class="statusbar">
-        <span class="mode-chip" id="mode-chip" title="Where this till stores its data"></span>
-        <button class="demo-chip" id="demo-chip" data-action="exit-demo" hidden>◆ DEMO DATA — TAP TO CLEAR</button>
+        <span class="mode-chip" id="mode-chip" title="Whether this till is talking to the shop"></span>
         <span class="status-item"><span class="status-dot" aria-hidden="true"></span>ONLINE</span>
         <span class="status-item status-clock"><span id="clock-time">--:--:--</span></span>
         <span class="status-item status-date" id="clock-date"></span>
@@ -130,14 +168,6 @@
     </header>
 
     <main class="shell">
-
-      <div class="demo-bar" id="demo-bar" hidden>
-        <div>
-          <b>You are using the demo shop.</b>
-          These sites, staff, vouchers and sales are samples — safe to explore, and not your real takings.
-        </div>
-        <button class="btn btn-danger btn-xs" data-action="exit-demo">✕ CLEAR DEMO &amp; START FRESH</button>
-      </div>
 
       <!-- ========================== ADMIN ========================== -->
       <section id="view-admin" class="view is-active" role="tabpanel" aria-label="Admin">
@@ -189,8 +219,7 @@
               </table>
               <div id="sales-empty" class="empty" hidden>
                 <p class="empty-title">NO TRANSACTIONS ON RECORD</p>
-                <p class="empty-sub">Sales logged from the terminal appear here in real time.</p>
-                <button class="btn btn-primary" data-action="seed">⚡ LOAD DEMO SHOP</button>
+                <p class="empty-sub">Sales logged from any till appear here in real time.</p>
               </div>
             </div>
           </section>
@@ -385,10 +414,6 @@
               </table>
             </div>
           </section>
-          <div class="admin-foot">
-            <button class="btn btn-ghost btn-xs" data-action="seed">DEMO SHOP</button>
-            <button class="btn btn-danger btn-xs" data-action="reset">RESET ALL DATA</button>
-          </div>
         </div>
 
         <!-- Cloud backend -->
@@ -408,22 +433,21 @@
 }'></textarea>
                 <label class="check"><input type="checkbox" id="cloud-emulators" /> Use local emulators (development)</label>
                 <p class="hint" id="cloud-emu-warn" hidden>⚠ Leave this <b>unticked</b> for a real shop — it points the app at emulators on this machine, not at your Firebase project.</p>
-                <button class="btn btn-primary" type="submit">⇄ CONNECT</button>
-                <p class="hint">Deploy <b>firestore.rules</b> and the <b>functions/</b> directory first — see <b>BACKEND.md</b>. Authorization is enforced server-side; this config is public by design.</p>
+                <button class="btn btn-primary" type="submit">⇄ SWITCH PROJECT</button>
+                <p class="hint">Changing this repoints every till that loads this page. Deploy <b>firestore.rules</b> and the <b>functions/</b> directory to the new project first — see <b>BACKEND.md</b>. Authorization is enforced server-side; this config is public by design.</p>
               </form>
             </section>
 
             <section class="panel">
               <header class="panel-head"><h2>STATUS</h2><span id="cloud-status"></span></header>
               <dl class="summary" id="cloud-summary"></dl>
-              <h3 class="mini-head">MIGRATE THIS BROWSER'S DATA</h3>
+              <h3 class="mini-head">IMPORT OLDER RECORDS FROM THIS BROWSER</h3>
               <p class="hint" id="cloud-push-note"></p>
               <div class="gen-row">
-                <button class="btn btn-ghost" id="btn-cloud-push">⇪ PUSH LOCAL DATA TO CLOUD</button>
+                <button class="btn btn-ghost" id="btn-cloud-push">⇪ PUSH LOCAL DATA TO THE SHOP</button>
                 <button class="btn btn-ghost" id="btn-cloud-diag" data-action="diagnose">⚙ RUN DIAGNOSTICS</button>
-                <button class="btn btn-danger btn-xs" id="btn-cloud-disable" hidden>DISCONNECT</button>
               </div>
-              <p class="hint">Pushing is one-way and safe to repeat — records keep their ids, so a second push updates rather than duplicates. Staff PINs never leave this device; imported agents arrive with a fresh PIN for you to hand out.</p>
+              <p class="hint">For tills that traded on an older, device-only version of this app. Pushing is one-way and safe to repeat — records keep their ids, so a second push updates rather than duplicates. Staff PINs never leave this device; imported agents arrive with a fresh PIN for you to hand out.</p>
             </section>
           </div>
         </div>
@@ -531,7 +555,7 @@
       </section>
     </main>
 
-    <footer class="foot"><span>NEXUS//POS — offline-first · data stays in this browser</span></footer>
+    <footer class="foot"><span>NEXUS//POS — one shared shop · every till sees the same stock</span></footer>
   </div>
 
   <!-- ============================ MODALS ============================ -->

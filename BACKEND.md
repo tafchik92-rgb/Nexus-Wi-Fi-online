@@ -1,16 +1,21 @@
 # NEXUS//POS — backend setup
 
-The app runs in two modes:
+There is one shop and it lives on the server. Every till — the desk, the
+phone, the tablet — reads and writes the same Firestore project, so stock and
+takings are the same everywhere. There is no device-only mode: the app does not
+work until this backend is deployed.
 
-| | **Local mode** (default) | **Cloud mode** |
-|---|---|---|
-| Data | `localStorage`, per browser | Firestore, shared by every till |
-| Auth | UI-level PIN gate in the browser | PIN verified by a Cloud Function |
-| Authorization | none enforced | Firestore security rules |
-| Offline | always (it never leaves the device) | yes — cached reads + queued writes |
-| Multi-till | no | yes |
+| | |
+|---|---|
+| Data | Firestore, shared by every till |
+| Auth | PIN verified by a Cloud Function, never in the browser |
+| Authorization | Firestore security rules, from token claims |
+| Offline | reads keep working from cache; **selling needs a connection** |
 
-Local mode is unchanged and needs nothing. This guide sets up cloud mode.
+Selling requires the link on purpose. A voucher code may only be handed out
+once, and two tills guessing offline would eventually hand out the same one.
+The till says so plainly and charges nothing rather than issue a code it cannot
+prove is still available.
 
 ---
 
@@ -28,6 +33,10 @@ The browser is treated as hostile. Three things make that real:
 3. **The ledger is append-only.** Sales and payments cannot be edited or deleted
    by anyone, prices are pinned to the voucher group in the rules, and a sale
    must be booked to the staff member making it.
+4. **A voucher can only go from available to sold, once.** The rules refuse any
+   other transition, and refuse to let a claim rewrite the code, group or site.
+   The till claims stock inside a Firestore transaction, so when two tills reach
+   for the last code the server picks a winner and the loser takes the next one.
 
 ---
 
@@ -101,54 +110,63 @@ firebase deploy --only hosting
 Point `hosting.public` in `firebase.json` at `dist` if you deploy the built
 output; leave it at `.` if you deploy the plain static files as-is.
 
-## 5. Connect the app
+## 5. Point the app at the project
 
 Two ways:
 
-- **Per device:** Admin → **CLOUD** → paste the config → **CONNECT**. Paste it
-  exactly as the console shows it — the `const firebaseConfig = { … };`
+- **For every device at once (recommended):** fill in **`firebase-config.js`**
+  and redeploy. Every till that loads the page is then connected with nothing
+  to configure.
+- **Per device:** leave it blank and the first screen asks for the config. Paste
+  it exactly as the console shows it — the `const firebaseConfig = { … };`
   JavaScript form is accepted, unquoted keys and all; it does not need
-  converting to JSON.
-- **For every device at once:** fill in **`firebase-config.js`** and redeploy. The
-  config is then pre-filled in the CLOUD panel; set `autoConnect: true` in that
-  file once the rules and functions are live and tills connect on load.
+  converting to JSON. Admin → **CLOUD** repoints a till later.
+
+If your Firestore is a **named** database rather than `(default)`, set
+`firestoreDatabaseId` in `firebase-config.js`, `firestore.database` in
+`firebase.json`, and `PROD_DATABASE_ID` in `functions/index.js` to match.
+Connecting to the wrong one does not error — it simply times out.
 
 Do **not** hand-add a `<script type="module">` Firebase snippet to `index.html`.
-`backend.js` initializes the SDK itself — with the offline cache, emulator
-wiring and auth the POS needs — and a module's `import` is scoped away from the
-app's other scripts, which share globals.
-Then **SIGN OUT** and sign in again: from now on the PIN is checked by the server.
+`backend.js` initializes the SDK itself — with the read cache, emulator wiring
+and auth the POS needs — and a module's `import` is scoped away from the app's
+other scripts, which share globals.
 
 A brand-new project has no staff, so the login screen offers **set up a new
 shop**, which calls `bootstrap` to create the founding administrator and first
 site. `bootstrap` refuses to run once any staff exist, so it cannot be replayed.
 
-## 6. Move your existing data across
+## 6. Move older records across
 
-**Admin → CLOUD → PUSH LOCAL DATA TO CLOUD** uploads this browser's sites,
+For a till that traded on an earlier, device-only build of this app:
+**Admin → CLOUD → PUSH LOCAL DATA TO THE SHOP** uploads that browser's sites,
 vouchers, accounts, sales, payments and closings. Records keep their ids, so
-pushing twice updates rather than duplicates.
+pushing twice updates rather than duplicates. Do it from each device that has
+history worth keeping.
 
-**Staff PINs are deliberately not migrated** — the local hashes were never
+**Staff PINs are deliberately not migrated** — the old local hashes were never
 meant to leave the device. Imported agents arrive with a fresh random PIN;
 reset each from **Team → RESET PIN** and hand it out.
 
 ---
 
-## Offline behaviour
+## What happens when the link drops
 
-Firestore's persistent cache serves reads and queues writes while the link is
-down, so the till keeps trading. The hard part is vouchers: two offline tills
-must never hand out the same code.
+Firestore's cache keeps serving reads, so reports, credit accounts and the
+day's log stay on screen and the app does not go blank. The header chip flips
+to **NO CONNECTION**.
 
-Each device **reserves a block** while it still has a connection
-(`reserveVouchers`, in a transaction, topping up to ~15 per group). Offline
-sales draw only from that block, and the rules only permit selling a voucher
-whose `reservedBy` matches the seller. Signing out returns unsold stock.
+Issuing a code stops. `Backend.claimAndSell` runs a Firestore transaction,
+which cannot be queued offline — it either commits against live server state or
+fails. The agent sees *"No connection to the shop — a code can only be issued
+online. Nothing was charged."* and nothing is written.
 
-The practical consequence: **a till can sell offline for as long as its reserved
-block lasts.** Reconnect to draw more. Raise the top-up count in `agent.js`
-(`topUpReservations`) if your outages are long.
+That is the trade the design makes: a shop that occasionally has to wait for a
+signal, rather than one that quietly sells the same voucher twice and finds out
+at month end.
+
+Settlements and account edits are ordinary writes and do queue, because they
+race with nothing — a payment against an account is safe to apply late.
 
 ---
 
@@ -214,14 +232,19 @@ firebase emulators:start --only firestore,functions,auth --project nexus-pos-fn-
 
 # terminal 2
 cd tests && npm install
-node tests/rules.test.mjs          # 25 authorization checks
-node tests/functions.test.mjs      # 19 server-side auth checks
+node tests/rules.test.mjs          # 29 authorization checks
+node tests/functions.test.mjs      # 21 server-side auth + selling checks
 ```
 
 `rules.test.mjs` asserts the boundary: cross-site reads, forged sales, price
-tampering, ledger edits, self-granted reservations and PIN-material access are
-all denied. `functions.test.mjs` covers bootstrap replay, PIN storage, lockout,
-role checks and the disjointness of two tills' voucher blocks.
+tampering, ledger edits, reselling a sold voucher and PIN-material access are
+all denied — including the exact transaction the till uses to claim a code and
+book its sale together. `functions.test.mjs` covers bootstrap replay, PIN
+storage, lockout and role checks, then claims a whole pool of vouchers and
+asserts every code came out exactly once.
+
+Under the emulator the functions fall back to the `(default)` database
+(`FUNCTIONS_EMULATOR`), since an emulated project has only that one.
 
 ---
 
@@ -231,7 +254,7 @@ role checks and the disjointness of two tills' voucher blocks.
 sites/{id}       name, code, status, createdAt
 staff/{id}       name, code, role, siteIds[], status, createdAt
 staffAuth/{id}   salt, hash, algo, failedAttempts, lockedUntil    ← no client access
-vouchers/{id}    code, type, siteId, status, batch, uploadedAt, reservedBy
+vouchers/{id}    code, type, siteId, status, batch, uploadedAt, soldAt
 accounts/{id}    name, phone, siteId, createdAt
 sales/{id}       customer, phone, accountId, voucherId, voucherCode, type,
                  price, pay, agentId, agentName, siteId, soldAt      ← immutable
@@ -252,8 +275,11 @@ Balances are never stored — a sale's outstanding amount is always
 | `createStaff` | admin | Creates staff and their PIN hash |
 | `changePin` | signed-in | Own PIN, current PIN required |
 | `resetPin` | admin | New random PIN, returned once |
-| `reserveVouchers` | staff | Atomically claims a block for this device |
-| `releaseReservations` | staff | Returns unsold stock to the pool |
+
+Selling is deliberately *not* a function: the till claims a voucher with a
+Firestore transaction, checked by the security rules. That keeps the hot path
+one round trip instead of two, and leaves the guarantee where it belongs — in
+the database, not in code a client could skip.
 
 `createStaff`, `resetPin` and friends re-read the caller's record rather than
 trusting the token's role claim, so a demoted admin loses access immediately

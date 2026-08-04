@@ -17,15 +17,16 @@ function renderTerminal() {
     <span class="op-meta">${esc(user.code)} · ${roleChip(user.role)}</span>`;
   $("#term-site").textContent = site ? siteName(site) : "NO SITE";
 
+  // Real shared stock: what every till at this site can still sell.
   $("#pkg-cards").innerHTML = TYPE_ORDER.map((t) => {
     const conf = VTYPES[t];
-    const stock = cloudMode() ? Backend.heldFor(site, t).length : stockOf(t, site);
+    const stock = stockOf(t, site);
     const out = stock === 0;
     return `<button type="button" class="pkg ${ui.sale.type === t ? "is-selected" : ""}"
         data-vtype="${t}" ${out ? "disabled" : ""} role="radio" aria-checked="${ui.sale.type === t}">
       <p class="pkg-name"><i></i>${conf.label}</p>
       <p class="pkg-price">${conf.price > 0 ? money(conf.price) : "FREE"}</p>
-      <p class="pkg-stock">${out ? "◼ DEPLETED" : `◆ ${cloudMode() ? "READY" : "STOCK"} ${stock}`}</p>
+      <p class="pkg-stock">${out ? "◼ DEPLETED" : `◆ STOCK ${stock}`}</p>
     </button>`;
   }).join("");
 
@@ -34,19 +35,6 @@ function renderTerminal() {
 
   renderSummary();
   renderAgentLog();
-  if (cloudMode()) topUpReservations(site);
-}
-
-// Keep a working block of vouchers on this device for each group.
-let _topUpBusy = false;
-async function topUpReservations(siteId) {
-  if (_topUpBusy || !siteId || typeof Backend === "undefined" || Backend.status !== "online") return;
-  _topUpBusy = true;
-  try {
-    for (const t of TYPE_ORDER) {
-      if (Backend.heldFor(siteId, t).length < 5) await Backend.topUp(siteId, t, 15);
-    }
-  } finally { _topUpBusy = false; }
 }
 
 // Existing debt for whoever is being typed into the client fields.
@@ -111,7 +99,7 @@ function renderAgentLog() {
       </li>`).join("");
 }
 
-function completeSale() {
+async function completeSale() {
   const user = currentUser();
   const site = currentSiteId() || (sitesForUser(user)[0] || {}).id || "";
   const nameField = $("#c-name");
@@ -128,38 +116,62 @@ function completeSale() {
   }
   if (problems.length) return toast("Cannot transmit — " + problems.join(", "), "err");
 
-  // Cloud mode sells only from the block this device reserved, so an offline
-  // till can never hand out a code another till has already sold.
-  const voucher = cloudMode()
-    ? Backend.takeHeld(site, ui.sale.type)
-    : db.vouchers
-        .filter((v) => v.type === ui.sale.type && v.status === "available" && v.siteId === site)
-        .sort((a, b) => a.uploadedAt.localeCompare(b.uploadedAt))[0];
-  if (!voucher) {
+  const type = ui.sale.type;
+  if (stockOf(type, site) === 0) {
     renderAll();
-    return toast(cloudMode()
-      ? `No ${VTYPES[ui.sale.type].label} reserved on this device — reconnect to draw more stock`
-      : `${VTYPES[ui.sale.type].label} stock depleted at ${siteName(site)}`, "err");
+    return toast(`${VTYPES[type].label} stock depleted at ${siteName(site)}`, "err");
   }
 
   const phone = $("#c-phone").value.trim();
-  const price = VTYPES[voucher.type].price;
+  const price = VTYPES[type].price;
   const onCredit = ui.sale.pay === "credit" && price > 0;
+  // Resolved before the claim because the account id belongs in the sale
+  // record; the stock check above keeps us from opening one we never use.
   const account = onCredit ? findOrCreateAccount(customer, phone, site) : null;
 
-  voucher.status = "sold";
-  touch("vouchers", voucher);
-  const sale = {
-    id: newId(), customer, phone,
-    accountId: account ? account.id : null,
-    voucherId: voucher.id, voucherCode: voucher.code, type: voucher.type, price,
-    pay: onCredit ? "credit" : "cash",
-    agentId: user.id, agentName: user.name,
-    siteId: site,
-    soldAt: new Date().toISOString(),     // purchase date — auto-captured
-  };
+  const btn = $("#btn-complete");
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "◈ ISSUING…";
+
+  let sale;
+  try {
+    // The server decides which code this till gets — see Backend.claimAndSell.
+    sale = await Backend.claimAndSell(site, type, (voucher) => ({
+      id: newId(), customer, phone,
+      accountId: account ? account.id : null,
+      voucherId: voucher.id, voucherCode: voucher.code, type: voucher.type, price,
+      pay: onCredit ? "credit" : "cash",
+      agentId: user.id, agentName: user.name,
+      siteId: site,
+      soldAt: new Date().toISOString(),   // purchase date — auto-captured
+    }));
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    btn.textContent = label;
+    btn.disabled = false;
+    renderAll();
+    if (msg === "OUT_OF_STOCK") return toast(`${VTYPES[type].label} stock depleted at ${siteName(site)}`, "err");
+    if (msg === "CONTENDED") return toast("Another till took those codes — try again", "err");
+    if (msg === "DENIED") {
+      return toast(`The shop refused every ${VTYPES[type].label} at ${siteName(site)} — check you are assigned to this site, then sign out and back in.`, "err");
+    }
+    if (msg === "NO_CONNECTION") {
+      return toast("No connection to the shop — a code can only be issued online. Nothing was charged.", "err");
+    }
+    if (msg === "TIMEOUT") {
+      return toast("The shop did not answer. Check today's log before selling again — this one may still go through.", "err");
+    }
+    return toast(cloudError(e), "err");
+  }
+
+  btn.textContent = label;
+  // Reflect the commit in the mirror right away so the stock count and the
+  // day log update without waiting for the round trip. The next snapshot
+  // replaces both collections wholesale, so this cannot drift or duplicate.
+  const claimed = db.vouchers.find((v) => v.id === sale.voucherId);
+  if (claimed) claimed.status = "sold";
   db.sales.push(sale);
-  touch("sales", sale);
   save();
 
   $("#sale-code").textContent = sale.voucherCode;

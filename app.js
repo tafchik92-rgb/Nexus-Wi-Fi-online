@@ -16,7 +16,14 @@ const ui = {
 
 /* ------------------------------------------------------------
    Login
+
+   The shop lives on the server, so the login screen has four states:
+   no project configured yet, configured but unreachable, first-run
+   setup, and the ordinary staff sign-in.
    ------------------------------------------------------------ */
+const hasConfig = () =>
+  !!(Backend.config && Backend.config.apiKey && Backend.config.projectId);
+
 function showLogin() {
   $("#login").hidden = false;
   $("#app").hidden = true;
@@ -25,50 +32,42 @@ function showLogin() {
   $("#lg-code").value = "";
   $("#lg-pin").value = "";
 
-  // Cloud mode: only the server knows who exists, so always offer the login,
-  // with setup reachable for a brand-new Firebase project.
-  if (typeof Backend !== "undefined" && Backend.enabled) {
-    $("#setup-box").hidden = !ui.showSetup;
-    $("#login-box").hidden = !!ui.showSetup;
-    $("#setup-lead").innerHTML = `Setting up a <b>new cloud shop</b>. This creates the founding administrator on your Firebase project — it only works while no staff exist there. Stuck on an error? <button type="button" class="link-btn" data-action="diagnose">Run backend diagnostics</button>.`;
-    $("#st-site-wrap").hidden = false;
-    $("#setup-demo-wrap").hidden = true;
-    $("#login-hint").innerHTML =
-      `<b>Shared shop</b> — signing in against your Firebase project.<br>` +
-      `<button type="button" class="link-btn" data-action="show-setup">set up a new shop</button> · ` +
-      `<button type="button" class="link-btn" data-action="diagnose">diagnostics</button> · ` +
-      `<button type="button" class="link-btn" data-action="use-local">work on this device only</button>`;
-    setTimeout(() => $(ui.showSetup ? "#st-name" : "#lg-code").focus(), 40);
+  const state = !hasConfig() ? "connect"
+    : !Backend.ready ? "offline"
+    : ui.showSetup ? "setup"
+    : "login";
+
+  $("#connect-box").hidden = state !== "connect";
+  $("#offline-box").hidden = state !== "offline";
+  $("#setup-box").hidden   = state !== "setup";
+  $("#login-box").hidden   = state !== "login";
+
+  if (state === "connect") {
+    const box = $("#cn-config");
+    if (!box.value.trim() && Backend.config) box.value = JSON.stringify(Backend.config, null, 2);
+    setTimeout(() => box.focus(), 40);
     return;
   }
 
-  // If nobody can sign in — an empty store, or one restored from v1 where no
-  // account has a PIN — show setup. Otherwise the login form is unwinnable.
-  const usable = usableUsers();
-  const stranded = usable.length === 0 && db.users.length > 0;
-  $("#setup-box").hidden = usable.length > 0;
-  $("#login-box").hidden = usable.length === 0;
+  if (state === "offline") {
+    $("#offline-project").textContent = (Backend.config || {}).projectId || "—";
+    const detail = $("#offline-detail");
+    detail.hidden = !detail.textContent.trim();
+    return;
+  }
 
-  if (usable.length === 0) {
-    $("#setup-lead").innerHTML = stranded
-      ? `This device holds <b>${db.users.length} staff record(s)</b> restored from an older version, but none of them has a PIN yet — so nobody can sign in. Create an administrator to take control. <b>Your sites, vouchers and sales are kept</b>, and you can set each agent's PIN from the Team page.`
-      : `No staff accounts exist on this device yet. Create the administrator who will run the shop — you'll sign in with this code and PIN from now on.`;
-    // don't offer to invent a second site over migrated data
-    $("#st-site-wrap").hidden = db.sites.length > 0;
-    $("#setup-demo-wrap").hidden = stranded;
+  if (state === "setup") {
+    $("#setup-lead").innerHTML =
+      `Setting up a <b>new shop</b> on <b>${esc(Backend.config.projectId)}</b>. This creates the founding administrator on the server — it only works while no staff exist there yet. ` +
+      `<button type="button" class="link-btn" data-action="show-login">back to sign in</button>`;
     setTimeout(() => $("#st-name").focus(), 40);
     return;
   }
 
-  // Show the codes that actually work — the one thing the operator needs.
-  const codes = usable.slice(0, 4).map((u) => `<b>${esc(u.code)}</b>`).join(" · ");
-  const preset = typeof window !== "undefined" ? window.NEXUS_FIREBASE_CONFIG : null;
-  const offer = (preset && preset.apiKey && typeof Backend !== "undefined" && !Backend.enabled)
-    ? `<br><span class="local-warn">This device only — sales here do not reach your other tills.</span> ` +
-      `<button type="button" class="link-btn" data-action="use-cloud">join the shared shop</button>`
-    : "";
   $("#login-hint").innerHTML =
-    `${usable.length} account(s) can sign in — ${codes}${usable.length > 4 ? " …" : ""}${offer}`;
+    `Signing in against <b>${esc(Backend.config.projectId)}</b> — every till shares these records.<br>` +
+    `<button type="button" class="link-btn" data-action="show-setup">set up a new shop</button> · ` +
+    `<button type="button" class="link-btn" data-action="diagnose">diagnostics</button>`;
   setTimeout(() => $("#lg-code").focus(), 40);
 }
 
@@ -90,43 +89,21 @@ async function runSetup() {
   if (!/^\d{4,8}$/.test(pin)) return fail("PIN must be 4–8 digits.");
   if (!siteName) return fail("Name your first site.");
 
-  if (typeof Backend !== "undefined" && Backend.enabled) {
-    try {
-      if (!Backend.ready) await Backend.connect();
-      const staff = await Backend.bootstrap({ name, code, pin, siteName });
-      await Backend.startSync(() => renderAll());
-      session = { userId: staff.id, siteId: "" };
-      saveSession();
-      enterApp();
-      return toast(`Welcome, ${name} — this shop is now live on your Firebase project`);
-    } catch (e) {
-      return fail(cloudError(e));
-    }
+  try {
+    if (!Backend.ready) await Backend.connect();
+    const staff = await Backend.bootstrap({ name, code, pin, siteName });
+    await Backend.startSync(() => renderAll());
+    session = { userId: staff.id, siteId: "" };
+    saveSession();
+    ui.showSetup = false;
+    enterApp();
+    toast(`Welcome, ${name} — ${siteName} is open for business`);
+  } catch (e) {
+    fail(cloudError(e));
   }
-
-  if (db.users.some((u) => u.code.toUpperCase() === code)) {
-    return fail(`Code ${code} already belongs to a staff record — pick another.`);
-  }
-
-  const now = new Date().toISOString();
-  // Keep whatever a v1 migration brought across; only open a site if there is none.
-  if (db.sites.length === 0) {
-    db.sites.push({ id: uid(), name: siteName, code: "S-01", status: "active", createdAt: now });
-  }
-  const admin = { id: uid(), name, code, role: "admin", salt: "", pinHash: "", siteIds: [], status: "active", createdAt: now };
-  await setUserPin(admin, pin);
-  db.users.push(admin);
-  save();
-
-  session = { userId: admin.id, siteId: "" };
-  saveSession();
-  enterApp();
-  const stranded = db.users.filter((u) => !u.pinHash).length;
-  toast(stranded
-    ? `Welcome, ${name} — ${stranded} restored account(s) need a PIN, set them on the Team page`
-    : `Welcome, ${name} — ${db.sites[0].name} is open for business`);
 }
 
+// The PIN is checked by the signIn function and never trusted in the browser.
 async function attemptLogin(code, pin) {
   const fail = (msg) => {
     const err = $("#login-err");
@@ -136,32 +113,20 @@ async function attemptLogin(code, pin) {
     setTimeout(() => $("#login-form").classList.remove("shake"), 500);
   };
 
-  // Cloud mode: the PIN is checked on the server and never trusted here.
-  if (typeof Backend !== "undefined" && Backend.enabled) {
-    try {
-      if (!Backend.ready) await Backend.connect();
-      const staff = await Backend.signIn(String(code).trim(), String(pin).trim());
-      await Backend.startSync(() => renderAll());
-      session = { userId: staff.id, siteId: staff.role === "admin" ? "" : (staff.siteIds || [])[0] || "" };
-      saveSession();
-      enterApp();
-      return toast(`Signed in as ${staff.name}`);
-    } catch (e) {
-      return fail(cloudError(e));
-    }
+  try {
+    if (!Backend.ready) await Backend.connect();
+    const staff = await Backend.signIn(String(code).trim(), String(pin).trim());
+    await Backend.startSync(() => renderAll());
+    session = {
+      userId: staff.id,
+      siteId: staff.role === "admin" ? savedScope() : (staff.siteIds || [])[0] || "",
+    };
+    saveSession();
+    enterApp();
+    toast(`Signed in as ${staff.name}`);
+  } catch (e) {
+    fail(cloudError(e));
   }
-
-  const user = db.users.find((u) => u.code.toUpperCase() === String(code).trim().toUpperCase());
-  if (!user) return fail("No staff member with that code.");
-  if (user.status !== "active") return fail("That account is suspended. Ask an administrator.");
-  if (!user.pinHash) return fail("No PIN set for this account. An administrator must reset it.");
-  if (!(await verifyPin(user, pin))) return fail("Incorrect PIN.");
-
-  const sites = sitesForUser(user);
-  session = { userId: user.id, siteId: user.role === "admin" ? "" : (sites[0] || {}).id || "" };
-  saveSession();
-  enterApp();
-  toast(`Signed in as ${user.name}`);
 }
 
 // Firebase errors arrive prefixed; show the message the function actually sent.
@@ -208,9 +173,11 @@ async function runDiagnostics() {
 }
 
 function logout() {
-  if (typeof Backend !== "undefined" && Backend.enabled && Backend.ready) Backend.signOut().catch(() => {});
+  if (Backend.ready) Backend.signOut().catch(() => {});
+  db = emptyDb();                 // don't leave one shift's records on screen
   clearSession();
   ui.sale = { type: null, pay: "cash" };
+  ui.showSetup = false;
   showLogin();
 }
 
@@ -239,7 +206,13 @@ function enterApp() {
   const sites = sitesForUser(user);
   sel.innerHTML = (admin ? `<option value="">ALL SITES</option>` : "") +
     sites.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
-  if (!admin && !sites.some((s) => s.id === session.siteId)) {
+  // A remembered scope can point at a site that has since been deleted, or
+  // that this staff member no longer covers — silently fall back rather than
+  // showing empty dashboards for a site that is not in the list.
+  if (session.siteId && !sites.some((s) => s.id === session.siteId)) {
+    session.siteId = admin ? "" : (sites[0] || {}).id || "";
+    saveSession();
+  } else if (!admin && !session.siteId) {
     session.siteId = (sites[0] || {}).id || "";
     saveSession();
   }
@@ -283,7 +256,6 @@ function routeFromHash() {
 function renderAll() {
   if (!session) return;
   renderModeChip();
-  renderDemoBanner();
   if (isAdmin()) {
     renderTiles();
     renderChart();
@@ -304,49 +276,22 @@ function renderAll() {
   }
 }
 
-// A demo store must be unmistakable — nobody should mistake sample sales
-// for real takings, and leaving must not mean hunting through settings.
-// Says plainly whether this device is on the shared shop or its own store —
-// the difference between "my sales are missing" and "we are not synced".
+// Says plainly whether the till is talking to the shop right now — the
+// difference between "that sale is missing" and "we lost the link".
 function renderModeChip() {
   const chip = $("#mode-chip");
   if (!chip) return;
-  if (typeof Backend === "undefined" || !Backend.enabled) {
-    chip.className = "mode-chip mode-local";
-    chip.textContent = "◆ THIS DEVICE ONLY";
-    chip.title = "Local mode — sales stay on this device and do not sync";
-    return;
-  }
   const state = Backend.status === "online" && Backend.ready ? "online"
     : Backend.status === "error" ? "error" : "offline";
   chip.className = "mode-chip mode-" + state;
   chip.textContent = state === "online" ? "☁ SHARED SHOP"
     : state === "error" ? "☁ SYNC ERROR"
-    : `☁ OFFLINE${Backend.pending ? ` · ${Backend.pending} QUEUED` : ""}`;
+    : "☁ NO CONNECTION";
   chip.title = state === "online"
-    ? "Cloud mode — every till sees the same sales"
-    : "Cloud mode, no connection — sales are queued and sync when the link returns";
-}
-
-function renderDemoBanner() {
-  const on = isDemoData();
-  const chip = $("#demo-chip");
-  const bar = $("#demo-bar");
-  chip.hidden = !on;
-  bar.hidden = !(on && isAdmin());
-  if (on && !isAdmin()) chip.title = "Sample data — an administrator can clear it";
-}
-
-async function exitDemo() {
-  if (!isAdmin()) return toast("Only an administrator can clear the demo data", "err");
-  if (!(await confirmDlg(
-    "Clear the demo shop and start fresh? Every sample site, staff account, voucher and sale is deleted, and you'll set up your own administrator next."))) return;
-  storage.removeItem(DB_KEY);
-  storage.removeItem(LEGACY_KEY);
-  clearSession();
-  db = emptyDb();
-  showLogin();
-  toast("Demo data cleared — set up your shop");
+    ? "Connected — every till sees the same stock and sales"
+    : state === "error"
+      ? `Firestore rejected the connection: ${Backend.error || "see diagnostics"}`
+      : "No link to the shop. Reports still read from cache; a code can only be issued online.";
 }
 
 function tickClock() {
@@ -357,118 +302,6 @@ function tickClock() {
     .toUpperCase();
   const live = $("#ts-live");
   if (live) live.textContent = now.toLocaleString("en-US", { hour12: false });
-}
-
-/* ------------------------------------------------------------
-   Demo data
-   ------------------------------------------------------------ */
-function mulberry32(seed) {
-  return () => {
-    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-async function seedDemo() {
-  const rnd = mulberry32(20260803);
-  const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
-  const old = new Date(Date.now() - 40 * 864e5).toISOString();
-
-  const fresh = emptyDb();
-  fresh.demo = true;                       // so the app can offer a clean exit
-  const sites = [
-    { id: uid(), name: "Gloy Mine Camp", code: "S-01", status: "active", createdAt: old },
-    { id: uid(), name: "Riverside Kiosk", code: "S-02", status: "active", createdAt: old },
-  ];
-  fresh.sites = sites;
-
-  const staff = [
-    { name: "Ada Mensah",  code: "ADM-01", role: "admin", pin: "1234", siteIds: [] },
-    { name: "Kira Vance",  code: "AG-01",  role: "agent", pin: "1111", siteIds: [sites[0].id] },
-    { name: "Dex Moreau",  code: "AG-02",  role: "agent", pin: "2222", siteIds: [sites[0].id] },
-    { name: "Zara Chen",   code: "AG-03",  role: "agent", pin: "3333", siteIds: [sites[1].id] },
-  ];
-  for (const s of staff) {
-    const u = { id: uid(), name: s.name, code: s.code, role: s.role, salt: "", pinHash: "", siteIds: s.siteIds, status: "active", createdAt: old };
-    await setUserPin(u, s.pin);
-    fresh.users.push(u);
-  }
-
-  db = fresh;   // generateCodes and the helpers read the live db
-  const agents = db.users.filter((u) => u.role === "agent");
-
-  for (const site of sites) {
-    // stocked deep enough that six weeks of backfilled trading leaves stock on hand
-    for (const [type, n] of [["V5", 180], ["V10", 140], ["REC", 30]]) {
-      for (const code of generateCodes(type, n, site.id)) {
-        db.vouchers.push({ id: uid(), code, type, siteId: site.id, status: "available", batch: "B-DEMO", uploadedAt: old });
-      }
-    }
-  }
-
-  const names = ["Amina Diallo", "Joel Okafor", "Rita Mensah", "Kwame Boateng", "Lena Fischer",
-    "Samuel Ade", "Nadia Toure", "Ibrahim Kane", "Grace Owusu", "Tunde Bello",
-    "Fatima Sy", "Marcus Cole", "Awa Ndiaye", "Daniel Osei", "Chloe Martin"];
-  const phoneOf = (i) => `+233 ${String(200000000 + i * 731913).slice(0, 9).replace(/(\d{2})(\d{3})(\d{4})/, "$1 $2 $3")}`;
-
-  // ~6 weeks of trading so last month and this month both have data
-  for (let daysAgo = 41; daysAgo >= 0; daysAgo--) {
-    const count = 2 + Math.floor(rnd() * 5);
-    for (let i = 0; i < count; i++) {
-      const agent = pick(agents);
-      const site = agent.siteIds[0];
-      const roll = rnd();
-      const type = roll < 0.5 ? "V5" : roll < 0.93 ? "V10" : "REC";
-      const voucher = db.vouchers.find((v) => v.type === type && v.siteId === site && v.status === "available");
-      if (!voucher) continue;
-      const d = new Date();
-      d.setDate(d.getDate() - daysAgo);
-      d.setHours(8 + Math.floor(rnd() * 12), Math.floor(rnd() * 60), Math.floor(rnd() * 60), 0);
-      if (d.getTime() > Date.now()) d.setTime(Date.now() - Math.floor(rnd() * 36e5));
-
-      const price = VTYPES[type].price;
-      const onCredit = price > 0 && rnd() < 0.3;
-      const ni = Math.floor(rnd() * names.length);
-      const customer = names[ni];
-      const phone = rnd() < 0.7 ? phoneOf(ni) : "";
-      const account = onCredit ? findOrCreateAccount(customer, phone, site) : null;
-      if (account) account.createdAt = d.toISOString();
-
-      voucher.status = "sold";
-      db.sales.push({
-        id: uid(), customer, phone,
-        accountId: account ? account.id : null,
-        voucherId: voucher.id, voucherCode: voucher.code, type, price,
-        pay: onCredit ? "credit" : "cash",
-        agentId: agent.id, agentName: agent.name,
-        siteId: site, soldAt: d.toISOString(),
-      });
-    }
-  }
-
-  // settle roughly two thirds of the debt so both states are visible
-  _rev++;
-  for (const acc of db.accounts.slice()) {
-    const bal = accountBalance(acc.id);
-    if (bal <= 0) continue;
-    const roll = rnd();
-    if (roll < 0.35) continue;                                  // still fully owing
-    const amount = roll < 0.7 ? Math.max(5, Math.round(bal * 0.5)) : bal;   // partial vs cleared
-    const collector = pick(agents.filter((a) => a.siteIds[0] === acc.siteId)) || pick(agents);
-    const p = recordPayment(acc.id, amount, pick(["cash", "cash", "mobile", "bank"]), "", collector.id);
-    if (p) {
-      const d = new Date(Date.now() - Math.floor(rnd() * 20) * 864e5);
-      p.receivedAt = d.toISOString();
-    }
-  }
-
-  save();
-  session = null;
-  showLogin();
-  $("#login-hint").innerHTML = `DEMO SHOP LOADED — admin <b>ADM-01</b> pin <b>1234</b> · agents <b>AG-01</b>/1111 · <b>AG-02</b>/2222 · <b>AG-03</b>/3333`;
-  toast("Demo shop loaded — sign in with ADM-01 / 1234");
 }
 
 // Rename a site in place. Records reference sites by id, so the change is
@@ -506,6 +339,21 @@ function wire() {
     e.preventDefault();
     await runSetup();
   });
+  // First run on a fresh deployment: the app must be pointed at a Firebase
+  // project before anyone can sign in, since there is nowhere else for the
+  // staff records to live.
+  $("#connect-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    let config;
+    try {
+      config = parseFirebaseConfig($("#cn-config").value);
+    } catch (err) { return toast(err.message, "err"); }
+    if (!config.projectId || !config.apiKey) {
+      return toast("Config needs at least apiKey and projectId — copy the whole object", "err");
+    }
+    Backend.saveConfig(config);
+    await connectAndRestore();
+  });
   $("#btn-logout").addEventListener("click", logout);
 
   // shell
@@ -524,18 +372,11 @@ function wire() {
     $("#modal-pin").hidden = false;
   });
   $("#pin-save").addEventListener("click", async () => {
-    const user = currentUser();
     const oldPin = $("#pin-old").value.trim(), newPin = $("#pin-new").value.trim();
     if (!/^\d{4,8}$/.test(newPin)) return toast("New PIN must be 4–8 digits", "err");
-    if (cloudMode()) {
-      try {
-        await Backend.call("changePin", { currentPin: oldPin, newPin });
-      } catch (e) { return toast(cloudError(e), "err"); }
-    } else {
-      if (user.pinHash && !(await verifyPin(user, oldPin))) return toast("Current PIN is incorrect", "err");
-      await setUserPin(user, newPin);
-      save();
-    }
+    try {
+      await Backend.call("changePin", { currentPin: oldPin, newPin });
+    } catch (e) { return toast(cloudError(e), "err"); }
     $("#modal-pin").hidden = true;
     toast("PIN updated");
   });
@@ -600,25 +441,15 @@ function wire() {
       config.useEmulators = false;
       $("#cloud-emulators").checked = false;
     }
-    Backend.saveConfig(config, true);
-    try {
-      await Backend.connect();
-      toast("Connected — sign out and back in to authenticate against the server");
-    } catch (err) {
-      Backend.enabled = false;
-      return toast(cloudError(err), "err");
+    // Repointing the app at a different project invalidates this session:
+    // the staff record and its token belong to the old one.
+    if (Backend.config && Backend.config.projectId !== config.projectId) {
+      if (!(await confirmDlg(
+        `Switch this till from ${Backend.config.projectId} to ${config.projectId}? Everyone signed in here is signed out, and the app reloads against the new project.`))) return;
     }
-    renderAll();
-  });
-  $("#btn-cloud-disable").addEventListener("click", async () => {
-    if (!(await confirmDlg("Switch back to local mode? Cloud data stays on the server; this browser returns to its own local store."))) return;
+    Backend.saveConfig(config);
     if (Backend.ready) await Backend.signOut().catch(() => {});
-    Backend.clearConfig();
-    Backend.ready = false;
-    clearSession();
-    db = loadDb();
-    showLogin();
-    toast("Back in local mode");
+    location.reload();
   });
   $("#btn-cloud-push").addEventListener("click", pushLocalToCloud);
   $("#cloud-emulators").addEventListener("change", (e) => {
@@ -711,15 +542,9 @@ function wire() {
       if (!u) return;
       if (!(await confirmDlg(`Reset the PIN for ${u.name}? A new 4-digit PIN will be shown once.`))) return;
       let pin;
-      if (cloudMode()) {
-        try {
-          pin = (await Backend.call("resetPin", { staffId: u.id })).pin;
-        } catch (e) { return toast(cloudError(e), "err"); }
-      } else {
-        pin = String(Math.floor(1000 + Math.random() * 9000));
-        await setUserPin(u, pin);
-        save();
-      }
+      try {
+        pin = (await Backend.call("resetPin", { staffId: u.id })).pin;
+      } catch (e) { return toast(cloudError(e), "err"); }
       renderAll();
       $("#sale-code").textContent = pin;
       $("#sale-details").innerHTML = `<div><dt>STAFF</dt><dd>${esc(u.name)} · ${esc(u.code)}</dd></div>
@@ -773,63 +598,34 @@ function wire() {
       toast(`Voucher ${v.code} purged`);
     }
     if (action === "show-setup") { ui.showSetup = true; showLogin(); return; }
+    if (action === "show-login") { ui.showSetup = false; showLogin(); return; }
     if (action === "diagnose") return runDiagnostics();
-    if (action === "use-local") {
-      if (!(await confirmDlg(
-        "Work on this device only? Sales recorded here stay on this device and will NOT appear on your other tills until you reconnect to the shared shop."))) return;
-      if (Backend.ready) await Backend.signOut().catch(() => {});
-      Backend.saveConfig(Backend.config, false);
-      Backend.ready = false;
-      clearSession();
-      db = loadDb();
-      ui.showSetup = false;
-      showLogin();
-      return toast("Local mode — this device keeps its own records", "err");
+    if (action === "retry-connect") {
+      btn.disabled = true;
+      const was = btn.textContent;
+      btn.textContent = "◈ CONNECTING…";
+      await connectAndRestore();
+      btn.textContent = was;
+      btn.disabled = false;
+      return;
     }
-    if (action === "use-cloud") {
-      if (!Backend.config) return toast("No Firebase project configured", "err");
-      Backend.saveConfig(Backend.config, true);
-      clearSession();
-      try {
-        await Backend.connect();
-        toast("Connected to the shared shop — sign in to continue");
-      } catch (e) {
-        Backend.enabled = false;
-        toast(cloudError(e), "err");
-      }
+    if (action === "change-project") {
+      Backend.clearConfig();
       ui.showSetup = false;
       showLogin();
       return;
     }
-    if (action === "exit-demo") return exitDemo();
-    if (action === "seed") {
-      if (cloudMode()) return toast("Demo data is local-mode only — it would overwrite your cloud shop", "err");
-      if (db.users.length || db.sales.length) {
-        if (!(await confirmDlg("Replace ALL current data with the demo shop?"))) return;
-      }
-      await seedDemo();
-    }
-    if (action === "reset") {
-      if (cloudMode()) return toast("Disconnect from cloud mode before wiping local data", "err");
-      if (!(await confirmDlg("Wipe every site, staff account, voucher, sale and payment? This cannot be undone."))) return;
-      storage.removeItem(DB_KEY);
-      storage.removeItem(LEGACY_KEY);
-      clearSession();
-      db = emptyDb();
-      showLogin();
-      toast("All data wiped — terminal reset", "err");
-    }
   });
 }
 
-// One-way import of this browser's local store into the cloud project.
+// One-way import of a till's old device-only store into the shop.
 async function pushLocalToCloud() {
-  if (!cloudMode()) return toast("Connect to a Firebase project first", "err");
+  if (!cloudMode()) return toast("Not connected to the shop", "err");
   if (!isAdmin()) return toast("Administrators only", "err");
   const local = readLocalStore();
-  if (!local) return toast("No local data to push", "err");
+  if (!local) return toast("No older records found in this browser", "err");
   if (!(await confirmDlg(
-    `Push ${local.sales.length} sales, ${local.vouchers.length} vouchers and ${local.users.length} staff to ${Backend.config.projectId}? Existing cloud records with the same id are overwritten. Staff PINs cannot be moved — imported agents get a fresh PIN you reset from the Team page.`))) return;
+    `Push ${local.sales.length} sales, ${local.vouchers.length} vouchers and ${local.users.length} staff to ${Backend.config.projectId}? Existing records with the same id are overwritten. Staff PINs cannot be moved — imported agents get a fresh PIN you reset from the Team page.`))) return;
 
   const btn = $("#btn-cloud-push");
   btn.disabled = true;
@@ -849,8 +645,9 @@ async function pushLocalToCloud() {
 /* ------------------------------------------------------------
    Boot
    ------------------------------------------------------------ */
-// Register the service worker so the till launches without a connection.
-// file:// has no worker support, and a failure here must never block the app.
+// The service worker caches the app shell so the till launches instantly and
+// survives a flaky link. file:// has no worker support, and a failure here
+// must never block the app.
 function registerServiceWorker() {
   if (!("serviceWorker" in navigator) || location.protocol === "file:") return;
   window.addEventListener("load", () => {
@@ -858,9 +655,44 @@ function registerServiceWorker() {
   });
 }
 
+// Opens the link to the shop and picks up whoever is already signed in on
+// this device. Firebase Auth holds the session, so a reload mid-shift does
+// not mean typing a PIN again — but the token, and the role claims the
+// security rules read from it, still come from the server.
+async function connectAndRestore() {
+  if (!Backend.config) { showLogin(); return; }
+
+  try {
+    if (!Backend.ready) await Backend.connect();
+  } catch (e) {
+    Backend.ready = false;
+    $("#offline-detail").textContent = cloudError(e);
+    showLogin();
+    return;
+  }
+
+  const uid = await Backend.restoreSession();
+  if (!uid) { showLogin(); return; }
+
+  await Backend.startSync(() => renderAll());
+  const me = userById(uid);
+  if (!me || me.status !== "active") {
+    // Removed or suspended while signed in — or the listeners were refused.
+    await Backend.signOut().catch(() => {});
+    db = emptyDb();
+    clearSession();
+    showLogin();
+    if (Backend.status === "error") toast(`Could not read the shop: ${Backend.error}`, "err");
+    return;
+  }
+
+  session = { userId: uid, siteId: savedScope() };
+  enterApp();
+  routeFromHash();
+}
+
 (async function boot() {
   registerServiceWorker();
-  db = loadDb();
   Backend.loadConfig();
   wire();
   tickClock();
@@ -870,29 +702,5 @@ function registerServiceWorker() {
   $("#rep-period").value = period;
   $("#me-period").value = period;
 
-  const params = new URLSearchParams(location.search);
-  if (params.get("demo") === "1" && db.users.length === 0) await seedDemo();
-
-  // Cloud mode always re-authenticates on load: a stale local session must
-  // never stand in for a server-issued token.
-  if (typeof Backend !== "undefined" && Backend.enabled) {
-    try {
-      await Backend.connect();
-      // Only now discard any local session: cloud mode must re-authenticate
-      // against the server rather than trust a session stored on the device.
-      clearSession();
-      showLogin();
-      return;
-    } catch (e) {
-      // Unreachable backend must not become a login nobody can pass, and
-      // must not sign out staff who were working locally — fall back and say so.
-      Backend.enabled = false;
-      Backend.ready = false;
-      toast(`Shared shop unreachable — this device is working on its own. ${cloudError(e)}`, "err");
-    }
-  }
-
-  session = loadSession();
-  if (session) enterApp(); else showLogin();
-  if (session) routeFromHash();
+  await connectAndRestore();
 })();

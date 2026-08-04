@@ -2,7 +2,8 @@
    Cloud Function tests — run against the emulator suite.
    Covers the things the browser must never be trusted with:
    PIN verification, lockout, role checks, bootstrap replay, and
-   the atomic voucher reservation that keeps offline tills honest.
+   the transactional voucher claim that stops two tills issuing the
+   same code.
 
    Usage:  node tests/run-functions-tests.mjs
    ============================================================ */
@@ -11,7 +12,7 @@ import { getAuth, signInWithCustomToken, signOut, connectAuthEmulator } from "fi
 import { getFunctions, httpsCallable, connectFunctionsEmulator } from "firebase/functions";
 import {
   getFirestore, connectFirestoreEmulator, doc, setDoc, getDoc, collection, getDocs,
-  writeBatch, query, where,
+  writeBatch, query, where, runTransaction,
 } from "firebase/firestore";
 
 const PROJECT = "nexus-pos-fn-test";
@@ -139,7 +140,8 @@ await check("an agent cannot create staff or reset PINs", async () => {
 await check("a signed-out client cannot call privileged functions", async () => {
   await signOut(auth);
   await mustThrow(() => call("createStaff", { name: "X", code: "Z", role: "admin", pin: "4444" }), "Sign in");
-  await mustThrow(() => call("reserveVouchers", { siteId, type: "V5", count: 1 }), "Sign in");
+  await mustThrow(() => call("changePin", { currentPin: "1234", newPin: "4321" }), "Sign in");
+  await mustThrow(() => call("resetPin", { staffId: adminStaffId }), "Sign in");
 });
 
 /* ---------------- PIN change / reset ---------------- */
@@ -161,51 +163,105 @@ await check("an admin reset issues a fresh PIN that works", async () => {
   if (!res.token) throw new Error("reset PIN does not work");
 });
 
-/* ---------------- voucher reservation ---------------- */
-await check("reserveVouchers hands out a block, and never the same code twice", async () => {
+/* ---------------- selling: the transactional claim ---------------- */
+// This is the real selling path. There is no reservation step any more: a
+// till claims stock straight out of the shared pool inside a transaction,
+// and the server decides who won.
+// Mirrors Backend.claimAndSell, including how a lost race actually surfaces:
+// not as ABORTED but as a rules rejection, because by commit time the voucher
+// is already sold and "status == available" no longer holds.
+const claim = async (db_, site, type) => {
+  const pool = await getDocs(query(collection(db_, "vouchers"),
+    where("siteId", "==", site), where("type", "==", type), where("status", "==", "available")));
+  const ids = pool.docs.map((d) => d.id).sort();
+  let denied = 0;
+  for (const id of ids) {
+    try {
+      return await runTransaction(db_, async (tx) => {
+        const ref = doc(db_, "vouchers", id);
+        const snap = await tx.get(ref);
+        if (!snap.exists() || snap.data().status !== "available") throw new Error("TAKEN");
+        tx.update(ref, { status: "sold", soldAt: new Date().toISOString() });
+        return { id, code: snap.data().code };
+      });
+    } catch (e) {
+      const detail = String(e.code || "") + " " + String(e.message || e);
+      if (/TAKEN|aborted|contention/i.test(detail)) continue;
+      if (/permission[-_ ]denied|insufficient permissions/i.test(detail)) { denied++; continue; }
+      throw e;
+    }
+  }
+  throw new Error(ids.length && denied === ids.length ? "DENIED" : "OUT_OF_STOCK");
+};
+
+let agentDb, agentUid;
+await check("stock loaded by an admin is visible to the agent at that site", async () => {
   const a = await call("signIn", { code: "ADM-01", pin: "1234" });
   await signInWithCustomToken(auth, a.token);
   const batch = writeBatch(db);
   for (let i = 0; i < 12; i++) {
     batch.set(doc(db, "vouchers", `v${i}`), {
-      code: `W5-${i}`, type: "V5", siteId, status: "available", reservedBy: null, uploadedAt: "2026-08-01T00:00:00Z", batch: "B-T" });
+      code: `W5-${i}`, type: "V5", siteId, status: "available",
+      uploadedAt: "2026-08-01T00:00:00Z", batch: "B-T" });
   }
   await batch.commit();
 
-  const first = await call("reserveVouchers", { siteId, type: "V5", count: 5 });
-  if (first.reserved.length !== 5) throw new Error("expected 5, got " + first.reserved.length);
-
-  // a second till must receive a disjoint set
   const agentPin = (await call("resetPin", { staffId: agentStaffId })).pin;
   const agent = await call("signIn", { code: "AG-01", pin: agentPin });
   await signInWithCustomToken(auth, agent.token);
-  const second = await call("reserveVouchers", { siteId, type: "V5", count: 5 });
-  const overlap = second.reserved.filter((v) => first.reserved.some((f) => f.id === v.id));
-  if (overlap.length) throw new Error(`${overlap.length} vouchers handed to both tills`);
+  agentDb = db;
+  agentUid = auth.currentUser.uid;
+  const seen = await getDocs(query(collection(db, "vouchers"), where("siteId", "==", siteId)));
+  if (seen.size !== 12) throw new Error("agent sees " + seen.size + " of 12");
 });
-await check("asking again returns the block already held, not more stock", async () => {
-  const again = await call("reserveVouchers", { siteId, type: "V5", count: 5 });
-  if (again.claimed !== 0) throw new Error("claimed extra stock: " + again.claimed);
-  if (again.reserved.length !== 5) throw new Error("held count changed: " + again.reserved.length);
+
+await check("a claim flips exactly one voucher to sold", async () => {
+  const won = await claim(agentDb, siteId, "V5");
+  const after = await getDoc(doc(db, "vouchers", won.id));
+  if (after.data().status !== "sold") throw new Error("voucher not sold");
+  const left = await getDocs(query(collection(db, "vouchers"),
+    where("siteId", "==", siteId), where("status", "==", "available")));
+  if (left.size !== 11) throw new Error("stock is " + left.size + ", expected 11");
 });
-await check("an agent cannot reserve stock at a site they are not assigned", async () => {
+
+await check("eleven concurrent claims hand out eleven distinct codes", async () => {
+  const won = await Promise.all(Array.from({ length: 11 }, () => claim(agentDb, siteId, "V5")));
+  const ids = new Set(won.map((w) => w.id));
+  if (ids.size !== 11) throw new Error(`${11 - ids.size} code(s) issued twice`);
+  const codes = new Set(won.map((w) => w.code));
+  if (codes.size !== 11) throw new Error("duplicate codes: " + [...codes].join(","));
+});
+
+await check("the pool is empty once every code is claimed", async () => {
+  await mustThrow(() => claim(agentDb, siteId, "V5"), "OUT_OF_STOCK");
+});
+
+await check("a sold voucher cannot be claimed a second time", async () => {
+  await mustThrow(() => runTransaction(db, async (tx) => {
+    const ref = doc(db, "vouchers", "v0");
+    await tx.get(ref);
+    tx.update(ref, { status: "sold" });
+  }));
+});
+
+await check("an agent cannot claim stock at a site they are not assigned", async () => {
   // agents cannot create sites (rules deny it), so seed via the owner endpoint
   await fetch(`${REST}/sites?documentId=otherSite`, { method: "POST", headers: OWNER,
     body: JSON.stringify({ fields: { name: { stringValue: "Elsewhere" }, code: { stringValue: "S-02" }, status: { stringValue: "active" } } }) });
-  await mustThrow(() => call("reserveVouchers", { siteId: "otherSite", type: "V5", count: 1 }), "not assigned");
+  await fetch(`${REST}/vouchers?documentId=vOther`, { method: "POST", headers: OWNER,
+    body: JSON.stringify({ fields: {
+      code: { stringValue: "W5-X" }, type: { stringValue: "V5" },
+      siteId: { stringValue: "otherSite" }, status: { stringValue: "available" },
+      uploadedAt: { stringValue: "2026-08-01T00:00:00Z" } } }) });
+  await mustThrow(() => runTransaction(db, async (tx) => {
+    const ref = doc(db, "vouchers", "vOther");
+    await tx.get(ref);
+    tx.update(ref, { status: "sold" });
+  }));
 });
+
 await check("an agent cannot enumerate vouchers outside a site-scoped query", async () => {
   await mustThrow(() => getDocs(collection(db, "vouchers")));
-});
-await check("releaseReservations returns unsold stock to the pool", async () => {
-  const before = (await call("reserveVouchers", { siteId, type: "V5", count: 5 })).reserved.length;
-  if (before < 1) throw new Error("held nothing to release");
-  const res = await call("releaseReservations");
-  if (!res || res.released < 1) throw new Error("nothing released: " + JSON.stringify(res));
-  // scoped query — the rules deny an agent listing every voucher globally
-  const snap = await getDocs(query(collection(db, "vouchers"), where("siteId", "==", siteId)));
-  const stillMine = snap.docs.filter((d) => d.data().reservedBy === auth.currentUser.uid);
-  if (stillMine.length) throw new Error(stillMine.length + " still held after release");
 });
 
 for (const [status, name] of results) console.log(`${status}  ${name}`);

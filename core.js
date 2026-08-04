@@ -7,9 +7,13 @@
 /* ------------------------------------------------------------
    Constants
    ------------------------------------------------------------ */
+// The two legacy keys are read-only now: this app stores everything in
+// Firestore. They survive so a till that traded in the old device-only
+// version can still push its history up (Admin → CLOUD → PUSH LOCAL DATA).
 const DB_KEY = "nexuspos.v2";
 const LEGACY_KEY = "nexuspos.v1";
-const SESSION_KEY = "nexuspos.session";
+// Only the chosen site scope lives here — identity comes from Firebase Auth.
+const SCOPE_KEY = "nexuspos.scope";
 
 const VTYPES = {
   V5:  { label: "$5 PASS",      price: 5,  chip: "chip-v5",  prefix: "W5" },
@@ -87,63 +91,37 @@ const storage = (() => {
    Data model
    ------------------------------------------------------------ */
 const emptyDb = () => ({
-  v: 2, demo: false,
+  v: 2,
   sites: [], users: [], vouchers: [], accounts: [], sales: [], payments: [], closings: [],
 });
 
-// True while the store is the sample shop rather than real trade.
-const isDemoData = () => !!db.demo && !cloudMode();
-
+// `db` is a read-through mirror of Firestore, kept live by Backend.startSync.
+// Nothing here is the source of truth — every view reads it, every write goes
+// to the server and comes back through the same snapshot listeners.
 let db = emptyDb();
 let _rev = 0;
 
 const bumpRev = () => { _rev++; };
-const cloudMode = () => typeof Backend !== "undefined" && Backend.enabled && Backend.ready;
+const cloudMode = () => typeof Backend !== "undefined" && Backend.ready;
 
-// Every mutation routes through touch/drop. Local mode keeps writing the
-// whole store to localStorage; cloud mode writes the individual document
-// (queued durably by Firestore when offline).
+// Every mutation routes through touch/drop, which write the individual
+// document. There is no local store to fall back to: a till that cannot
+// reach the server cannot sell, and says so rather than diverging.
 function touch(collection, obj) {
   if (cloudMode()) Backend.put(collection, obj);
 }
 function drop(collection, id) {
   if (cloudMode()) Backend.drop(collection, id);
 }
-// Ids must be allocated by whichever store owns them.
+// Ids come from Firestore so they are unique across every till.
 function newId() {
   return cloudMode() ? Backend.newId() : uid();
 }
 
+// Kept as the single "the store changed" signal the render layer waits on;
+// persistence itself belongs to Firestore.
 function save() {
   _rev++;
-  // Cloud mode owns its own persistence — but only once it is actually
-  // connected. Skipping on `enabled` alone silently discarded every local
-  // write whenever the backend was configured but unreachable.
-  if (cloudMode()) return;
-  try {
-    storage.setItem(DB_KEY, JSON.stringify(db));
-  } catch (e) {
-    // never let a storage failure take the till down mid-sale
-    console.warn("Could not save locally:", e && e.message);
-  }
-}
-
-function loadDb() {
-  try {
-    const raw = storage.getItem(DB_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.users)) return normalizeDb(parsed);
-    }
-  } catch (_) { /* corrupted store — fall through to legacy/empty */ }
-  try {
-    const legacy = storage.getItem(LEGACY_KEY);
-    if (legacy) {
-      const parsed = JSON.parse(legacy);
-      if (parsed && Array.isArray(parsed.agents)) return migrateV1(parsed);
-    }
-  } catch (_) { /* ignore */ }
-  return emptyDb();
 }
 
 function normalizeDb(d) {
@@ -181,64 +159,32 @@ function migrateV1(old) {
 }
 
 /* ------------------------------------------------------------
-   Auth — UI-level role gate.
-   NOTE: this is a browser-only app. PINs are salted+hashed so they
-   are not stored in the clear, but anyone with devtools can read or
-   rewrite localStorage. Treat this as workflow separation between
-   staff, not as a security boundary. Wire to a real backend for that.
+   Auth — a real boundary, enforced off this device.
+
+   PINs are verified by the signIn Cloud Function and never reach the
+   browser. It returns a custom token carrying the staff member's role
+   and site scope as claims, and the Firestore security rules read the
+   claims — so nothing typed into devtools here widens anyone's access.
    ------------------------------------------------------------ */
-async function hashPin(pin, salt) {
-  const data = `${salt}:${pin}`;
-  const subtle = globalThis.crypto && globalThis.crypto.subtle;
-  if (subtle) {
-    const buf = await subtle.digest("SHA-256", new TextEncoder().encode(data));
-    return "s256:" + [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  }
-  // Non-secure contexts (file://) have no SubtleCrypto — degrade to a
-  // non-cryptographic digest so the gate still works locally.
-  let h = 0x811c9dc5;
-  for (let i = 0; i < data.length; i++) {
-    h ^= data.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return "fnv:" + h.toString(16);
-}
+let session = null;   // { userId, siteId } — userId is the Firebase Auth uid
 
-const newSalt = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
-
-async function setUserPin(user, pin) {
-  user.salt = newSalt();
-  user.pinHash = await hashPin(pin, user.salt);
-}
-
-async function verifyPin(user, pin) {
-  if (!user.pinHash) return false;
-  return (await hashPin(pin, user.salt)) === user.pinHash;
-}
-
-let session = null;   // { userId, siteId }
-
-function loadSession() {
+// Only the site scope is worth remembering on the device: it is a view
+// preference, not a credential. Identity is restored from Firebase Auth.
+const saveSession = () => {
   try {
-    const raw = storage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const s = JSON.parse(raw);
-    const u = userById(s.userId);
-    if (!u || u.status !== "active") return null;
-    return s;
-  } catch (_) { return null; }
-}
-const saveSession = () => storage.setItem(SESSION_KEY, JSON.stringify(session));
-const clearSession = () => { session = null; storage.removeItem(SESSION_KEY); };
+    storage.setItem(SCOPE_KEY, JSON.stringify({ siteId: (session && session.siteId) || "" }));
+  } catch (_) { /* private mode — the scope just resets on reload */ }
+};
+const savedScope = () => {
+  try {
+    const raw = storage.getItem(SCOPE_KEY);
+    return raw ? (JSON.parse(raw).siteId || "") : "";
+  } catch (_) { return ""; }
+};
+const clearSession = () => { session = null; storage.removeItem(SCOPE_KEY); };
 
 const currentUser = () => (session ? userById(session.userId) : null);
 const isAdmin = () => { const u = currentUser(); return !!u && u.role === "admin"; };
-
-// An account is only usable if it is active AND has a PIN. Accounts restored
-// from a v1 store have no PIN, so a store can hold users yet still have nobody
-// able to sign in — that must route to setup, not to a dead login form.
-const canSignIn = (u) => !!u && u.status === "active" && !!u.pinHash;
-const usableUsers = () => db.users.filter(canSignIn);
 
 // Site the session is acting on. Admins may scope to "" (all sites).
 const currentSiteId = () => (session ? session.siteId || "" : "");

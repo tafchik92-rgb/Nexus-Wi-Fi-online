@@ -2,7 +2,7 @@
    Security-rules tests — run against the Firestore emulator.
    These assert the authorization boundary itself: that a hostile
    client cannot read another site's data, forge a sale, rewrite the
-   ledger, sell an unreserved voucher, or reach PIN material.
+   ledger, resell a sold voucher, or reach PIN material.
 
    Usage:  node tests/run-rules-tests.mjs
    ============================================================ */
@@ -11,7 +11,7 @@ import {
   initializeTestEnvironment, assertFails, assertSucceeds,
 } from "@firebase/rules-unit-testing";
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, runTransaction,
 } from "firebase/firestore";
 
 const SITE_A = "siteA", SITE_B = "siteB";
@@ -25,6 +25,11 @@ const env = await initializeTestEnvironment({
   projectId: "nexus-pos-rules-test",
   firestore: { rules: fs.readFileSync("firestore.rules", "utf8"), host: "127.0.0.1", port: 8080 },
 });
+
+// Start clean. Sales, payments and closings are create-only by design, so a
+// second run against a leftover database would fail on its own fixtures —
+// which looks exactly like a broken rule and is not one.
+await env.clearFirestore();
 
 // contexts
 const admin = env.authenticatedContext("admin1", { role: "admin", siteIds: [] }).firestore();
@@ -40,9 +45,10 @@ await env.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(d, "staff", "agentA"), { name: "A", code: "AG-01", role: "agent", siteIds: [SITE_A], status: "active" });
   await setDoc(doc(d, "staff", "admin1"), { name: "Boss", code: "ADM-01", role: "admin", siteIds: [], status: "active" });
   await setDoc(doc(d, "staffAuth", "agentA"), { hash: "secret", salt: "s" });
-  await setDoc(doc(d, "vouchers", "vA-free"), { code: "W5-A", type: "V5", siteId: SITE_A, status: "available", reservedBy: null });
-  await setDoc(doc(d, "vouchers", "vA-mine"), { code: "W5-B", type: "V5", siteId: SITE_A, status: "available", reservedBy: "agentA" });
-  await setDoc(doc(d, "vouchers", "vB-mine"), { code: "W5-C", type: "V5", siteId: SITE_B, status: "available", reservedBy: "agentB" });
+  await setDoc(doc(d, "vouchers", "vA-1"), { code: "W5-A", type: "V5", siteId: SITE_A, status: "available", uploadedAt: "2026-08-01T00:00:00Z" });
+  await setDoc(doc(d, "vouchers", "vA-2"), { code: "W5-B", type: "V5", siteId: SITE_A, status: "available", uploadedAt: "2026-08-01T00:00:01Z" });
+  await setDoc(doc(d, "vouchers", "vA-3"), { code: "W5-D", type: "V5", siteId: SITE_A, status: "available", uploadedAt: "2026-08-01T00:00:02Z" });
+  await setDoc(doc(d, "vouchers", "vB-1"), { code: "W5-C", type: "V5", siteId: SITE_B, status: "available", uploadedAt: "2026-08-01T00:00:00Z" });
   await setDoc(doc(d, "accounts", "accA"), { name: "Cust", phone: "", siteId: SITE_A });
   await setDoc(doc(d, "accounts", "accB"), { name: "Other", phone: "", siteId: SITE_B });
   await setDoc(doc(d, "sales", "saleA"), { customer: "X", type: "V5", price: 5, pay: "cash", agentId: "agentA", siteId: SITE_A, soldAt: "2026-08-01T00:00:00Z" });
@@ -83,13 +89,13 @@ await check("an admin can suspend staff but not rewrite their code", async () =>
 
 /* ---------------- site scoping ---------------- */
 await check("an agent cannot read another site's vouchers or accounts", async () => {
-  await assertFails(getDoc(doc(agentA, "vouchers", "vB-mine")));
+  await assertFails(getDoc(doc(agentA, "vouchers", "vB-1")));
   await assertFails(getDoc(doc(agentA, "accounts", "accB")));
-  await assertSucceeds(getDoc(doc(agentA, "vouchers", "vA-free")));
+  await assertSucceeds(getDoc(doc(agentA, "vouchers", "vA-1")));
   await assertSucceeds(getDoc(doc(agentA, "accounts", "accA")));
 });
 await check("an admin reads across every site", async () => {
-  await assertSucceeds(getDoc(doc(admin, "vouchers", "vB-mine")));
+  await assertSucceeds(getDoc(doc(admin, "vouchers", "vB-1")));
   await assertSucceeds(getDoc(doc(admin, "accounts", "accB")));
 });
 await check("an agent cannot book a sale at a site they are not assigned", async () => {
@@ -98,19 +104,54 @@ await check("an agent cannot book a sale at a site they are not assigned", async
 });
 
 /* ---------------- voucher integrity ---------------- */
-await check("an agent can only sell a voucher reserved to them", async () => {
-  await assertFails(updateDoc(doc(agentA, "vouchers", "vA-free"), { status: "sold" }));
-  await assertSucceeds(updateDoc(doc(agentA, "vouchers", "vA-mine"), { status: "sold" }));
+// Stock is shared, so the rule is deliberately narrow: an agent may flip a
+// voucher at their own site from available to sold and nothing else. Racing
+// tills are separated by the transaction, not by who "owns" the code.
+await check("an agent can claim any available voucher at their own site", async () => {
+  await assertSucceeds(updateDoc(doc(agentA, "vouchers", "vA-1"), { status: "sold" }));
+});
+await check("an agent cannot claim a voucher at another site", async () => {
+  await assertFails(updateDoc(doc(agentB, "vouchers", "vA-2"), { status: "sold" }));
 });
 await check("a sold voucher cannot be flipped back to available", async () => {
-  await assertFails(updateDoc(doc(agentA, "vouchers", "vA-mine"), { status: "available" }));
+  await assertFails(updateDoc(doc(agentA, "vouchers", "vA-1"), { status: "available" }));
 });
-await check("an agent cannot grant itself a reservation", async () => {
-  await assertFails(updateDoc(doc(agentA, "vouchers", "vA-free"), { reservedBy: "agentA" }));
+await check("a sold voucher cannot be resold", async () => {
+  await assertFails(updateDoc(doc(agentA, "vouchers", "vA-1"), { status: "sold", soldAt: "2026-08-04T00:00:00Z" }));
+});
+await check("claiming cannot rewrite the code, group or site", async () => {
+  await assertFails(updateDoc(doc(agentA, "vouchers", "vA-2"), { status: "sold", code: "W10-CHEAT" }));
+  await assertFails(updateDoc(doc(agentA, "vouchers", "vA-2"), { status: "sold", type: "REC" }));
+  await assertFails(updateDoc(doc(agentA, "vouchers", "vA-2"), { status: "sold", siteId: SITE_B }));
 });
 await check("an agent cannot mint voucher stock", async () => {
   await assertFails(setDoc(doc(agentA, "vouchers", "forged"), {
-    code: "FREE", type: "V10", siteId: SITE_A, status: "available", reservedBy: null }));
+    code: "FREE", type: "V10", siteId: SITE_A, status: "available" }));
+});
+
+// This is how the till actually sells: one transaction flips the voucher and
+// writes the sale, so the two can never come apart.
+await check("a transaction can claim a voucher and book its sale together", async () => {
+  await assertSucceeds(runTransaction(agentA, async (tx) => {
+    const ref = doc(agentA, "vouchers", "vA-2");
+    const snap = await tx.get(ref);
+    if (snap.data().status !== "available") throw new Error("already taken");
+    tx.update(ref, { status: "sold", soldAt: "2026-08-04T00:00:00Z" });
+    tx.set(doc(agentA, "sales", "txSale"), {
+      customer: "C", voucherId: "vA-2", voucherCode: snap.data().code,
+      type: "V5", price: 5, pay: "cash", agentId: "agentA", siteId: SITE_A,
+      soldAt: "2026-08-04T00:00:00Z" });
+  }));
+});
+await check("the same transaction is refused when the sale is forged", async () => {
+  await assertFails(runTransaction(agentA, async (tx) => {
+    const ref = doc(agentA, "vouchers", "vA-3");
+    await tx.get(ref);
+    tx.update(ref, { status: "sold" });
+    tx.set(doc(agentA, "sales", "txForged"), {
+      customer: "C", voucherId: "vA-3", type: "V5", price: 1, pay: "cash",
+      agentId: "agentA", siteId: SITE_A, soldAt: "2026-08-04T00:00:00Z" });
+  }));
 });
 
 /* ---------------- ledger integrity ---------------- */
