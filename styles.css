@@ -849,3 +849,7 @@ html { overflow-x: hidden; }
   background: rgba(255, 176, 58, .07); border-left: 3px solid var(--amber);
 }
 .pkg-hint b { color: var(--amber); }
+
+/* ---------------- install-to-device offer ---------------- */
+#btn-install-login { width: 100%; margin-top: 14px; }
+#install-steps { line-height: 1.7; }

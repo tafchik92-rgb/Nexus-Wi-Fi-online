@@ -67,6 +67,7 @@
       </form>
 
       <p class="login-hint" id="login-hint"></p>
+      <button class="btn btn-ghost btn-big" id="btn-install-login" hidden>⤓ INSTALL ON THIS DEVICE</button>
       <p class="login-foot">Your PIN is checked on the server and never stored in this browser. Role and site access travel in a signed token the database itself enforces.</p>
     </div>
 
@@ -175,6 +176,7 @@
           <span class="who-name" id="user-name">—</span>
           <span class="who-meta" id="user-meta"></span>
         </div>
+        <button class="btn btn-ghost btn-xs" id="btn-install" title="Install this till on the device" hidden>⤓ INSTALL</button>
         <button class="btn btn-ghost btn-xs" id="btn-pin" title="Change your PIN">⚿ PIN</button>
         <button class="btn btn-ghost btn-xs" id="btn-logout">⏻ SIGN OUT</button>
       </div>
@@ -683,6 +685,20 @@
         <button class="btn btn-ghost" id="pin-cancel">CANCEL</button>
         <button class="btn btn-primary" id="pin-save">SAVE</button>
       </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-install" hidden>
+    <div class="modal-box panel">
+      <header class="modal-head">
+        <h2>INSTALL ON THIS DEVICE</h2>
+      </header>
+      <div class="modal-body">
+        <p class="hint" id="install-steps"></p>
+      </div>
+      <footer class="modal-foot">
+        <button class="btn btn-primary" id="install-done">GOT IT</button>
+      </footer>
     </div>
   </div>
 

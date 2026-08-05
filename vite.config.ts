@@ -40,6 +40,27 @@ const copyStaticScripts = () => ({
         fs.copyFileSync(path.resolve(icons, f), path.resolve(out, 'icons', f));
       }
     }
+
+    // Vite hashes the manifest into assets/. A manifest's relative URLs
+    // resolve against the manifest's own location, so from there "icons/…"
+    // becomes "/assets/icons/…", start_url becomes "/assets/index.html" and
+    // scope becomes "/assets/" — none of which exist. The browser then
+    // refuses to install the app at all. Point the link back at the copy
+    // sitting beside index.html, where those paths mean what they say.
+    if (fs.existsSync(htmlOut)) {
+      const html = fs.readFileSync(htmlOut, 'utf8');
+      const fixed = html.replace(
+        /(<link[^>]*rel="manifest"[^>]*href=")[^"]*(")/,
+        '$1manifest.webmanifest$2');
+      if (fixed !== html) fs.writeFileSync(htmlOut, fixed);
+      // and drop the stray hashed copy so there is only one manifest
+      const assetsDir = path.resolve(out, 'assets');
+      if (fs.existsSync(assetsDir)) {
+        for (const f of fs.readdirSync(assetsDir)) {
+          if (f.endsWith('.webmanifest')) fs.rmSync(path.resolve(assetsDir, f));
+        }
+      }
+    }
   },
 });
 

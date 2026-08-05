@@ -77,6 +77,7 @@ function showLogin() {
     return;
   }
 
+  renderInstall();
   $("#login-hint").innerHTML =
     `Signing in against <b>${esc(Backend.config.projectId)}</b> — every till shares these records.<br>` +
     `<button type="button" class="link-btn" data-action="show-setup">set up a new shop</button> · ` +
@@ -307,6 +308,7 @@ function routeFromHash() {
 function renderAll() {
   if (!session) return;
   renderModeChip();
+  renderInstall();
   renderSiteScope();
   if (isAdmin()) {
     renderTiles();
@@ -698,6 +700,78 @@ async function pushLocalToCloud() {
 }
 
 /* ------------------------------------------------------------
+   Install to the device
+
+   A till belongs on a home screen, launching full screen without a
+   browser bar. Chrome will offer that on its own, but only through a
+   small address-bar icon most people never notice — so ask plainly.
+   iOS has no install event at all; there the only route is Share → Add
+   to Home Screen, which has to be described rather than triggered.
+   ------------------------------------------------------------ */
+let installPrompt = null;
+
+const isIOS = () =>
+  /iPad|iPhone|iPod/.test(navigator.userAgent || "") && !window.MSStream;
+
+// Already running from the home screen — nothing left to offer.
+const isInstalled = () => {
+  try {
+    return window.matchMedia("(display-mode: standalone)").matches
+      || window.matchMedia("(display-mode: fullscreen)").matches
+      || window.navigator.standalone === true;
+  } catch (_) { return false; }
+};
+
+function renderInstall() {
+  const offer = !isInstalled() && (!!installPrompt || isIOS());
+  for (const id of ["#btn-install", "#btn-install-login"]) {
+    const el = $(id);
+    if (el) el.hidden = !offer;
+  }
+}
+
+async function promptInstall() {
+  // Chrome/Edge/Android: fire the real prompt we stashed earlier.
+  if (installPrompt) {
+    const deferred = installPrompt;
+    installPrompt = null;              // a prompt can only be used once
+    renderInstall();
+    deferred.prompt();
+    const { outcome } = await deferred.userChoice.catch(() => ({ outcome: "dismissed" }));
+    if (outcome !== "accepted") {
+      installPrompt = deferred;        // they may want it later
+      renderInstall();
+    }
+    return;
+  }
+
+  // iOS Safari, or a browser that has not offered a prompt: explain it.
+  $("#install-steps").innerHTML = isIOS()
+    ? `Open the <b>Share</b> menu at the bottom of Safari, choose <b>Add to Home Screen</b>, then <b>Add</b>.<br><br>` +
+      `The till then launches full screen with its own icon. It must be Safari — Chrome on iOS cannot install web apps.`
+    : `Use your browser's menu and choose <b>Install app</b> or <b>Add to Home screen</b>.<br><br>` +
+      `If neither appears, the page is probably not being served over <b>HTTPS</b>, or it is running inside an embedded preview. Open the deployed address in its own browser tab.`;
+  $("#modal-install").hidden = false;
+}
+
+function wireInstall() {
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();               // keep it for our own button
+    installPrompt = e;
+    renderInstall();
+  });
+  window.addEventListener("appinstalled", () => {
+    installPrompt = null;
+    renderInstall();
+    toast("Installed — launch NEXUS//POS from the home screen from now on");
+  });
+  $("#btn-install").addEventListener("click", promptInstall);
+  $("#btn-install-login").addEventListener("click", promptInstall);
+  $("#install-done").addEventListener("click", () => { $("#modal-install").hidden = true; });
+  renderInstall();
+}
+
+/* ------------------------------------------------------------
    Boot
    ------------------------------------------------------------ */
 // The service worker caches the app shell so the till launches instantly and
@@ -771,6 +845,7 @@ async function connectAndRestore() {
     registerServiceWorker();
     Backend.loadConfig();
     wire();
+    wireInstall();
     tickClock();
     setInterval(tickClock, 1000);
 

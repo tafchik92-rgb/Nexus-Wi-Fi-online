@@ -77,9 +77,14 @@ the security rules refuse it regardless of what the client asks.
 
 ## 📱 Install on a phone
 
-The app is installable. Open it in Chrome or Safari on the phone and choose
-**Add to Home Screen** — it then launches full screen with its own icon, and a
-service worker caches the app shell so it opens instantly, connection or not.
+The app is installable. Sign-in screen and header both carry an **⤓ INSTALL**
+button: on Chrome/Edge/Android it fires the browser's own install prompt, and
+on iOS — which has no such prompt — it explains the Share → Add to Home Screen
+route. Either way the till then launches full screen with its own icon, and a
+service worker caches the app shell so it opens instantly.
+
+Installation needs **HTTPS** and a real browser tab. An embedded preview frame
+cannot install, which is the usual reason the button does nothing.
 
 Reading works from cache through a brief drop. **Issuing a code does not** — see
 *Why selling needs a connection* below.
