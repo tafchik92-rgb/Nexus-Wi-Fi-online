@@ -232,8 +232,20 @@ firebase emulators:start --only firestore,functions,auth --project nexus-pos-fn-
 
 # terminal 2
 cd tests && npm install
-node tests/rules.test.mjs          # 29 authorization checks
+node tests/rules.test.mjs          # 35 authorization checks
 node tests/functions.test.mjs      # 21 server-side auth + selling checks
+```
+
+A third suite audits the layout. It needs Playwright and the app on a static
+server, and it drives every screen as both roles at seven form factors —
+320px phone through 1920px desktop — failing on anything a person could not
+reach: content wider than the screen with no scroller, controls pushed off an
+edge, zero-sized controls, tap targets under 28x24, and text clipped with no
+ellipsis. Decorative layers are exempt, being aria-hidden and unclickable.
+
+```bash
+npx serve -l 4199 .                # terminal 3
+node tests/responsive.test.mjs     # exits non-zero on any finding
 ```
 
 `rules.test.mjs` asserts the boundary: cross-site reads, forged sales, price

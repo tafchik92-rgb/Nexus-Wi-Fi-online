@@ -151,6 +151,20 @@ payment allocations, never stored, so a sale's outstanding amount is always
 | `firestore.rules` | the authorization boundary |
 | `importer.js` | dependency-free `.xlsx` / `.csv` voucher reader |
 
+## 📐 Layout across form factors
+
+Audited at 320, 390, 430, 768, 1024, 1280 and 1920px, as both an administrator
+and an agent, across every screen and modal. `tests/responsive.test.mjs` keeps
+it that way — it fails on content wider than the screen with no scroller,
+controls pushed off an edge, zero-sized controls, tap targets under 28×24, or
+text clipped with nowhere to scroll.
+
+The fault worth knowing about: grid and flex children are `min-width: auto` by
+default, so one wide table sized its whole column — and every sibling — to the
+table. With overflow clipped at the root that content was not scrolled to, it
+was unreachable. On a 390px phone the staff form measured 1109px with CREATE
+ACCOUNT some 700px off the right edge.
+
 ## 🎨 Design notes
 
 - Dark-only sci-fi system: cut-corner glass panels, neon cyan/magenta accents,

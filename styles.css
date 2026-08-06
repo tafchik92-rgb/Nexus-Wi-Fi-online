@@ -853,3 +853,66 @@ html { overflow-x: hidden; }
 /* ---------------- install-to-device offer ---------------- */
 #btn-install-login { width: 100%; margin-top: 14px; }
 #install-steps { line-height: 1.7; }
+
+/* ============================================================
+   Fitting the screen
+
+   Grid and flex children are min-width:auto by default, so a single
+   wide table sizes its whole column to that table — and every sibling
+   in the column with it. The root clips horizontal overflow, so the
+   excess was not scrolled to, it was simply unreachable: on a 390px
+   phone the staff form measured 1109px and CREATE ACCOUNT sat some
+   700px off the right edge. Letting these boxes shrink is what keeps
+   every control on screen; the tables inside still scroll on their own.
+   ============================================================ */
+.cols > *,
+.agent-layout > *,
+.tiles > *,
+.tiles-2 > *,
+.tiles-3 > *,
+.stock-cards > *,
+.pkg-grid > *,
+.panel,
+.table-wrap { min-width: 0; }
+.table-wrap { max-width: 100%; }
+
+/* The header wraps rather than pushing the site picker, PIN and SIGN OUT
+   past the right edge — which is exactly what a 768px tablet did. */
+.top { flex-wrap: wrap; }
+.tabs, .topright, .subnav { min-width: 0; flex-wrap: wrap; }
+.topright { justify-content: flex-end; }
+
+/* Panel actions wrap at any width. EXPORT CSV was being squeezed narrower
+   than its own label on every screen size, desktop included. */
+.panel-actions { flex-wrap: wrap; }
+.panel-actions .btn, .filters .btn { flex: 0 0 auto; }
+
+/* Long codes and customer names must not force a table wider than its
+   scroller can express. */
+.grid-table { min-width: max-content; }
+
+/* ---------------- touch targets ----------------
+   Row actions were 20px tall and the link buttons 18px — fine for a
+   mouse, a coin-toss for a thumb on a phone at a market stall. */
+@media (pointer: coarse) {
+  .btn, .subtab, .tab, .seg-btn,
+  select.field, input.field { min-height: 40px; }
+  .btn-xs { min-height: 36px; }
+  .row-act { min-height: 34px; padding: 8px 12px; }
+  .link-btn { min-height: 30px; padding: 5px 2px; }
+  .check { min-height: 34px; display: flex; align-items: center; gap: 9px; }
+  .check input[type="checkbox"] { width: 20px; height: 20px; flex: 0 0 auto; }
+}
+
+/* Row actions and inline links are the smallest things anyone has to hit.
+   At 20px and 18px they were under the 24px floor even with a mouse. */
+.row-act { min-height: 24px; }
+.link-btn { min-height: 24px; }
+.check input[type="checkbox"] { width: 18px; height: 18px; }
+@media (pointer: coarse) { .check input[type="checkbox"] { width: 24px; height: 24px; } }
+
+/* On the narrowest phones a long button label has nowhere to go but out.
+   Full-width buttons may take a second line rather than lose their text. */
+@media (max-width: 360px) {
+  .gen-row .btn, .stack .btn, .btn-big { white-space: normal; line-height: 1.3; }
+}

@@ -11,7 +11,8 @@
     "lint": "tsc --noEmit",
     "emulators": "firebase emulators:start --only firestore,functions,auth",
     "test:rules": "node tests/rules.test.mjs",
-    "test:functions": "node tests/functions.test.mjs"
+    "test:functions": "node tests/functions.test.mjs",
+    "test:responsive": "node tests/responsive.test.mjs"
   },
   "dependencies": {},
   "devDependencies": {

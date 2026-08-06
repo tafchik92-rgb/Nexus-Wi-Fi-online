@@ -370,7 +370,7 @@ function renderMonthEnd() {
     </div>`;
 
   $("#me-breakdown").innerHTML = `
-    <table class="grid-table">
+    <div class="table-wrap"><table class="grid-table">
       <thead><tr><th>LINE</th><th class="num">COUNT</th><th class="num">AMOUNT</th></tr></thead>
       <tbody>
         <tr><td>Cash sales</td><td class="num">${r.cashCount}</td><td class="num">${money(r.cashSalesTotal)}</td></tr>
@@ -379,21 +379,21 @@ function renderMonthEnd() {
         <tr><td>Credit issued</td><td class="num">${r.creditCount}</td><td class="num">${money(r.creditIssued)}</td></tr>
         <tr class="row-total"><td>Still outstanding from this month</td><td class="num">—</td><td class="num owed-strong">${money(r.unpaidFromPeriod)}</td></tr>
       </tbody>
-    </table>
+    </table></div>
     <h3 class="mini-head">BY VOUCHER GROUP</h3>
-    <table class="grid-table">
+    <div class="table-wrap"><table class="grid-table">
       <thead><tr><th>GROUP</th><th class="num">SOLD</th><th class="num">VALUE</th></tr></thead>
       <tbody>${TYPE_ORDER.map((t) => `
         <tr><td>${typeChip(t)}</td><td class="num">${r.byType[t].count}</td><td class="num">${money(r.byType[t].total)}</td></tr>`).join("")}
       </tbody>
-    </table>
+    </table></div>
     <h3 class="mini-head">SETTLEMENTS BY METHOD</h3>
-    <table class="grid-table">
+    <div class="table-wrap"><table class="grid-table">
       <thead><tr><th>METHOD</th><th class="num">AMOUNT</th></tr></thead>
       <tbody>${Object.keys(PAY_METHODS).map((m) => `
         <tr><td>${PAY_METHODS[m]}</td><td class="num">${money(r.byMethod[m] || 0)}</td></tr>`).join("")}
       </tbody>
-    </table>`;
+    </table></div>`;
 
   $("#btn-close-month").disabled = !!closed;
   $("#btn-close-month").textContent = closed ? "✓ MONTH CLOSED" : "▣ CLOSE MONTH";
