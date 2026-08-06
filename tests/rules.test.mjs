@@ -246,6 +246,53 @@ await check("staff and sites stay readable unscoped — every till needs them", 
   await assertSucceeds(getDocs(collection(agentA, "staff")));
 });
 
+/* ---------------- reversals ---------------- */
+// Cancelling a sale must not mean editing or deleting it: the ledger keeps
+// both the sale and the correction that undid it.
+const reversal = (extra) => Object.assign({
+  saleId: "saleA", siteId: SITE_A, voucherId: "vA-1", amount: 5,
+  outcome: "restocked", reason: "double-billed", reversedBy: "admin1",
+  reversedAt: "2026-08-05T00:00:00Z",
+}, extra);
+
+await check("only an admin may reverse a sale", async () => {
+  await assertFails(setDoc(doc(agentA, "reversals", "rAgent"), reversal({ reversedBy: "agentA" })));
+  await assertSucceeds(setDoc(doc(admin, "reversals", "r1"), reversal()));
+});
+await check("a reversal is booked to the admin performing it", async () => {
+  await assertFails(setDoc(doc(admin, "reversals", "rFramed"), reversal({ reversedBy: "agentA" })));
+});
+await check("a reversal must say what became of the code", async () => {
+  await assertFails(setDoc(doc(admin, "reversals", "rNoOutcome"), reversal({ outcome: "shredded" })));
+  await assertSucceeds(setDoc(doc(admin, "reversals", "rVoid"), reversal({ saleId: "saleB", outcome: "voided" })));
+});
+await check("a reversal cannot be edited or deleted once written", async () => {
+  await assertFails(updateDoc(doc(admin, "reversals", "r1"), { reason: "changed my mind" }));
+  await assertFails(deleteDoc(doc(admin, "reversals", "r1")));
+});
+await check("reversing does not make the sale itself editable", async () => {
+  await assertFails(updateDoc(doc(admin, "sales", "saleA"), { price: 0 }));
+  await assertFails(deleteDoc(doc(admin, "sales", "saleA")));
+});
+await check("an agent reads reversals at their own site, not elsewhere", async () => {
+  await assertSucceeds(getDocs(query(collection(agentA, "reversals"), where("siteId", "in", [SITE_A]))));
+  await assertFails(getDocs(query(collection(agentA, "reversals"), where("siteId", "in", [SITE_B]))));
+  await assertFails(getDocs(collection(agentA, "reversals")));
+});
+// The voucher has to be recoverable, or a reversal leaves stock permanently
+// short — which is the loss the whole feature exists to undo.
+await check("an admin can return a sold voucher to stock, or take it out of use", async () => {
+  await assertSucceeds(updateDoc(doc(admin, "vouchers", "vA-1"), { status: "available" }));
+  await assertSucceeds(updateDoc(doc(admin, "vouchers", "vA-1"), { status: "void" }));
+});
+await check("an agent cannot un-sell a voucher to cover a mistake", async () => {
+  await env.withSecurityRulesDisabled(async (c) =>
+    setDoc(doc(c.firestore(), "vouchers", "vA-sold"), {
+      code: "W5-Z", type: "V5", siteId: SITE_A, status: "sold", uploadedAt: "2026-08-01T00:00:00Z" }));
+  await assertFails(updateDoc(doc(agentA, "vouchers", "vA-sold"), { status: "available" }));
+  await assertFails(updateDoc(doc(agentA, "vouchers", "vA-sold"), { status: "void" }));
+});
+
 /* ---------------- closings ---------------- */
 await check("an agent closes only their own month, and cannot rewrite it", async () => {
   await assertSucceeds(setDoc(doc(agentA, "closings", "mine"), {

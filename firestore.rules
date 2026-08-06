@@ -140,6 +140,26 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ---------- reversals: undoing a sale without erasing it ----------
+    // A sale stays immutable. Cancelling one appends a reversal that points at
+    // it, so the ledger shows both the original and the correction — which is
+    // the whole reason the sales collection is append-only. Deleting the sale
+    // would leave a voucher back in stock with nothing to explain why.
+    match /reversals/{reversalId} {
+      allow read: if isStaff() && atMySite(resource.data.siteId);
+
+      // Administrators only: reversing moves money and returns stock.
+      allow create: if isAdmin()
+                    && request.resource.data.reversedBy == uid()
+                    && request.resource.data.saleId is string
+                    && request.resource.data.saleId.size() > 0
+                    && request.resource.data.siteId is string
+                    && request.resource.data.outcome in ['restocked', 'voided'];
+
+      // A correction is itself part of the record.
+      allow update, delete: if false;
+    }
+
     // ---------- month-end closings ----------
     match /closings/{closingId} {
       allow read:   if isAdmin() || (isStaff() && resource.data.userId == uid());

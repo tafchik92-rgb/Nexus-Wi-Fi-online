@@ -9,7 +9,8 @@
    ------------------------------------------------------------ */
 function renderTiles() {
   const site = currentSiteId();
-  const sales = salesInScope(site);
+  // Totals count only sales that still stand; reversed ones are history.
+  const sales = liveSales(site);
   const cash = sales.filter((s) => s.pay === "cash").reduce((sum, s) => sum + s.price, 0);
   const creditIssued = sales.filter((s) => s.pay === "credit").reduce((sum, s) => sum + s.price, 0);
   const collected = db.payments
@@ -64,7 +65,7 @@ function last7Days(siteId) {
     });
   }
   const idx = Object.fromEntries(days.map((d, i) => [d.key, i]));
-  for (const s of salesInScope(siteId)) {
+  for (const s of liveSales(siteId)) {
     const i = idx[dayKey(s.soldAt)];
     if (i === undefined) continue;
     days[i].count++;
@@ -199,29 +200,124 @@ function renderSales() {
   $("#sales-empty").hidden = all.length !== 0;
   $("#sales-table").style.display = all.length === 0 ? "none" : "";
 
+  // A reversed sale stays in the ledger, struck through and labelled. Hiding
+  // it would leave a voucher back in stock with nothing to account for it.
   $("#sales-tbody").innerHTML = rows.map((s) => {
     const owed = saleOutstanding(s);
-    return `<tr>
+    const rev = reversalOf(s.id);
+    return `<tr class="${rev ? "row-reversed" : ""}">
       <td class="cell-date">${fmtDateTime(s.soldAt)}</td>
       <td>${esc(s.customer)}${s.phone ? `<span class="cell-sub mono">${esc(s.phone)}</span>` : ""}</td>
       <td class="cell-code">${esc(s.voucherCode)}</td>
       <td>${typeChip(s.type)}</td>
       <td class="num">${s.price > 0 ? money(s.price) : "—"}</td>
-      <td>${payChip(s.pay)}${owed > 0 ? `<span class="cell-sub owed">OWES ${money(owed)}</span>` : ""}</td>
+      <td>${rev
+        ? `<span class="chip chip-sold"><i></i>REVERSED</span><span class="cell-sub">${esc(rev.reason || "no reason given")}</span>`
+        : payChip(s.pay) + (owed > 0 ? `<span class="cell-sub owed">OWES ${money(owed)}</span>` : "")}</td>
       <td>${esc(s.agentName)}<span class="cell-sub">${esc(siteName(s.siteId))}</span></td>
+      <td>${rev
+        ? `<span class="cell-sub">${esc(rev.reversedByName || "")} · ${fmtDate(rev.reversedAt)}</span>`
+        : `<button class="row-act danger" data-action="reverse-sale" data-id="${s.id}">REVERSE</button>`}</td>
     </tr>`;
   }).join("") || (all.length > 0
-    ? `<tr><td colspan="7" class="cell-none">NO RECORDS MATCH THE CURRENT FILTERS</td></tr>` : "");
+    ? `<tr><td colspan="8" class="cell-none">NO RECORDS MATCH THE CURRENT FILTERS</td></tr>` : "");
+}
+
+/* --- reversing a sale ----------------------------------------
+   The fault this answers: a network wobble mid-sale that bills a customer
+   twice. The duplicate has to come off the books and its code has to go
+   somewhere sensible — back into stock if nobody received it, or out of
+   circulation if they did and it must never be sold again. */
+function openReversal(saleId) {
+  const sale = db.sales.find((s) => s.id === saleId);
+  if (!sale) return;
+  if (reversalOf(saleId)) return toast("That sale has already been reversed", "err");
+  if (!isAdmin()) return toast("Administrators only", "err");
+
+  ui.reverseSale = saleId;
+  const paid = paidMap().get(sale.id) || 0;
+  const closed = db.closings.find((c) =>
+    c.userId === sale.agentId && c.period === monthKey(sale.soldAt) && (c.siteId || "") === (sale.siteId || ""));
+
+  $("#rev-title").textContent = sale.voucherCode;
+  $("#rev-details").innerHTML = `
+    <div><dt>CUSTOMER</dt><dd>${esc(sale.customer)}</dd></div>
+    <div><dt>PACKAGE</dt><dd>${VTYPES[sale.type].label}</dd></div>
+    <div><dt>CHARGED</dt><dd>${sale.price > 0 ? money(sale.price) : "$0"} ${sale.pay.toUpperCase()}</dd></div>
+    <div><dt>SOLD BY</dt><dd>${esc(sale.agentName)} · ${fmtDateTime(sale.soldAt)}</dd></div>
+    <div><dt>SITE</dt><dd>${esc(siteName(sale.siteId))}</dd></div>`;
+
+  // Two things the operator cannot see from the row but must know before
+  // cancelling: money already taken, and a month already closed.
+  const notes = [];
+  if (paid > 0) {
+    notes.push(`<b>${money(paid)} has already been collected</b> against this sale. Reversing clears the debt but does not refund it — hand the cash back, or leave it on the account.`);
+  }
+  if (closed) {
+    notes.push(`${esc(sale.agentName)} has already <b>closed ${fmtMonth(monthKey(sale.soldAt))}</b>. Those totals are frozen and will not change; only live figures will.`);
+  }
+  $("#rev-notes").innerHTML = notes.map((n) => `<p class="rev-note">⚠ ${n}</p>`).join("");
+  $("#rev-notes").hidden = notes.length === 0;
+
+  $("#rev-reason").value = "";
+  $$("#rev-outcome .seg-btn").forEach((b) => b.classList.toggle("is-active", b.dataset.outcome === "restocked"));
+  ui.reverseOutcome = "restocked";
+  $("#modal-reverse").hidden = false;
+  setTimeout(() => $("#rev-reason").focus(), 40);
+}
+
+async function submitReversal() {
+  const sale = db.sales.find((s) => s.id === ui.reverseSale);
+  if (!sale) return;
+  const reason = $("#rev-reason").value.trim();
+  if (!reason) return toast("Say why this sale is being reversed — it goes on the record", "err");
+
+  const btn = $("#rev-confirm");
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "◈ REVERSING…";
+  try {
+    const rec = await Backend.reverseSale(sale, {
+      outcome: ui.reverseOutcome,
+      reason,
+      paidSoFar: paidMap().get(sale.id) || 0,
+    });
+    db.reversals.push(rec);
+    const v = db.vouchers.find((x) => x.id === sale.voucherId);
+    if (v) v.status = ui.reverseOutcome === "restocked" ? "available" : "void";
+    save(); renderAll();
+    $("#modal-reverse").hidden = true;
+    toast(ui.reverseOutcome === "restocked"
+      ? `Sale reversed — ${sale.voucherCode} is back in stock`
+      : `Sale reversed — ${sale.voucherCode} is void and cannot be sold again`);
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    if (msg === "NO_CONNECTION") {
+      toast("No connection to the shop — nothing was reversed. Try again when the link is back.", "err");
+    } else if (msg === "ALREADY_REVERSED") {
+      toast("That sale was already reversed", "err");
+    } else {
+      toast(cloudError(e), "err");
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 function exportSalesCSV() {
   const rows = filteredSales();
   if (rows.length === 0) return toast("Nothing to export with the current filters", "err");
-  const head = ["Date", "Site", "Customer", "Phone", "Voucher", "Type", "Price", "Payment", "Outstanding", "Agent"];
-  downloadCSV(`nexus-pos-sales-${dayKey(new Date())}.csv`, [head].concat(rows.map((s) => [
-    new Date(s.soldAt).toISOString(), siteName(s.siteId), s.customer, s.phone, s.voucherCode,
-    VTYPES[s.type].label, s.price, s.pay.toUpperCase(), saleOutstanding(s), s.agentName,
-  ])));
+  const head = ["Date", "Site", "Customer", "Phone", "Voucher", "Type", "Price", "Payment",
+    "Outstanding", "Agent", "Status", "Reversed by", "Reversal reason"];
+  downloadCSV(`nexus-pos-sales-${dayKey(new Date())}.csv`, [head].concat(rows.map((s) => {
+    const rev = reversalOf(s.id);
+    return [
+      new Date(s.soldAt).toISOString(), siteName(s.siteId), s.customer, s.phone, s.voucherCode,
+      VTYPES[s.type].label, s.price, s.pay.toUpperCase(), saleOutstanding(s), s.agentName,
+      rev ? "REVERSED" : "", rev ? rev.reversedByName : "", rev ? rev.reason : "",
+    ];
+  })));
   toast(`Exported ${rows.length} record${rows.length === 1 ? "" : "s"} to CSV`);
 }
 
@@ -235,7 +331,7 @@ function renderTeam() {
     ? `${db.users.filter((u) => u.status === "active").length} ACTIVE / ${db.users.length} TOTAL` : "";
 
   $("#team-tbody").innerHTML = db.users.map((u) => {
-    const sales = db.sales.filter((s) => s.agentId === u.id);
+    const sales = db.sales.filter((s) => s.agentId === u.id && !isReversed(s));
     const rev = sales.reduce((sum, s) => sum + s.price, 0);
     const sites = (u.role === "admin") ? "ALL SITES"
       : (u.siteIds || []).map(siteName).join(", ") || "—";
@@ -290,7 +386,7 @@ function renderSites() {
   $("#sites-table").style.display = db.sites.length === 0 ? "none" : "";
 
   $("#sites-tbody").innerHTML = db.sites.map((s) => {
-    const sales = db.sales.filter((x) => x.siteId === s.id);
+    const sales = db.sales.filter((x) => x.siteId === s.id && !isReversed(x));
     const rev = sales.reduce((sum, x) => sum + x.price, 0);
     const stock = TYPE_ORDER.reduce((sum, t) => sum + stockOf(t, s.id), 0);
     const staff = db.users.filter((u) => (u.siteIds || []).includes(s.id)).length;
@@ -425,6 +521,8 @@ function renderVouchers() {
       <td>${esc(siteName(v.siteId))}</td>
       <td>${v.status === "available"
         ? `<span class="chip chip-ok"><i></i>AVAILABLE</span>`
+        : v.status === "void"
+        ? `<span class="chip chip-off"><i></i>VOID</span>`
         : `<span class="chip chip-sold"><i></i>SOLD</span>`}</td>
       <td class="cell-date">${esc(v.batch)}</td>
       <td class="cell-date">${fmtDate(v.uploadedAt)}</td>

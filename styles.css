@@ -916,3 +916,17 @@ html { overflow-x: hidden; }
 @media (max-width: 360px) {
   .gen-row .btn, .stack .btn, .btn-big { white-space: normal; line-height: 1.3; }
 }
+
+/* ---------------- reversed sales ----------------
+   A cancelled sale is struck through rather than removed: a row that
+   simply vanished would leave a voucher back in stock with nothing to
+   account for it. */
+.row-reversed td { opacity: .62; }
+.row-reversed .cell-code { text-decoration: line-through; }
+.rev-note {
+  margin: 0 0 10px; padding: 10px 12px;
+  font-size: 12.5px; line-height: 1.55; color: var(--ink-2);
+  background: rgba(255, 176, 58, .08); border-left: 3px solid var(--amber);
+}
+.rev-note b { color: var(--amber); }
+#rev-details { margin-bottom: 14px; }

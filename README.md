@@ -48,6 +48,19 @@ agents are locked to their assignment.
   last payment, plus a per-customer **statement** of unpaid vouchers and payment
   history. Admins additionally get a full settlement history across sites.
 
+### Reversing a sale
+A network fault that bills a customer twice needs undoing, and an
+administrator can do it from the ledger — but a sale is never edited or
+deleted. The reversal is appended alongside it, so the row stays visible,
+struck through, with the reason and who reversed it. Takings, debts, reports
+and the agent's own day all stop counting it.
+
+The code then either **returns to stock** (nobody received it) or is **voided**
+(the customer has it, so it must never be sold again). Reversals are keyed by
+the sale, so one sale can be reversed exactly once no matter how many tills
+try. Money already collected is reported before you confirm — reversing clears
+the debt, it does not hand the cash back.
+
 ### Month-end reporting
 Agents close their own month; admins see every agent for the period.
 The statement breaks down **total cash collected vs outstanding debt**:
@@ -221,7 +234,7 @@ edits do queue and sync later, because a payment races with nothing.
   Firestore would then serve the previous user's cached documents — so signing
   out clears the cache too.
 
-Tested against the Firebase emulators: **35 security-rules checks** and **21
+Tested against the Firebase emulators: **43 security-rules checks** and **21
 server-side auth and selling checks** (`tests/`), including claiming a whole
 pool of vouchers and asserting every code came out exactly once, and that an
 agent can read their own site's settlements but not a neighbouring site's.

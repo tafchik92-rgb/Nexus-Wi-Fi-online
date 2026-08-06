@@ -12,6 +12,8 @@ const ui = {
   uploadType: "V5",
   sale: { type: null, pay: "cash" },
   settleAccount: null,
+  reverseSale: null,
+  reverseOutcome: "restocked",
 };
 
 /* ------------------------------------------------------------
@@ -549,6 +551,21 @@ function wire() {
   $("#settle-full").addEventListener("click", () => {
     $("#settle-amount").value = accountBalance(ui.settleAccount);
   });
+  // reversing a sale
+  $("#rev-cancel").addEventListener("click", () => { $("#modal-reverse").hidden = true; });
+  $("#rev-confirm").addEventListener("click", submitReversal);
+  $$("#rev-outcome .seg-btn").forEach((b) => b.addEventListener("click", () => {
+    ui.reverseOutcome = b.dataset.outcome;
+    $$("#rev-outcome .seg-btn").forEach((x) => {
+      const on = x === b;
+      x.classList.toggle("is-active", on);
+      x.setAttribute("aria-checked", on);
+    });
+    $("#rev-outcome-hint").textContent = ui.reverseOutcome === "restocked"
+      ? "The customer never received this code, so it returns to stock and can be sold again."
+      : "The customer already has this code. It leaves stock for good and can never be sold again.";
+  }));
+
   $("#site-edit-cancel").addEventListener("click", () => { $("#modal-site").hidden = true; });
   $("#site-edit-save").addEventListener("click", saveSiteEdit);
   $("#stmt-close").addEventListener("click", () => { $("#modal-stmt").hidden = true; });
@@ -575,6 +592,7 @@ function wire() {
     const { action, id } = btn.dataset;
 
     if (action === "settle") return openSettle(id);
+    if (action === "reverse-sale") return openReversal(id);
     if (action === "view-account") return openStatement(id);
 
     if (action === "toggle-user") {

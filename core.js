@@ -93,6 +93,7 @@ const storage = (() => {
 const emptyDb = () => ({
   v: 2,
   sites: [], users: [], vouchers: [], accounts: [], sales: [], payments: [], closings: [],
+  reversals: [],
 });
 
 // `db` is a read-through mirror of Firestore, kept live by Backend.startSync.
@@ -126,7 +127,7 @@ function save() {
 
 function normalizeDb(d) {
   const out = Object.assign(emptyDb(), d);
-  for (const key of ["sites", "users", "vouchers", "accounts", "sales", "payments", "closings"]) {
+  for (const key of ["sites", "users", "vouchers", "accounts", "sales", "payments", "closings", "reversals"]) {
     if (!Array.isArray(out[key])) out[key] = [];
   }
   return out;
@@ -211,6 +212,8 @@ const stockOf = (type, siteId) =>
 const soldOf = (type, siteId) =>
   db.vouchers.filter((v) => v.type === type && v.status === "sold" && inSite(v, siteId)).length;
 
+// Everything the ledger shows, reversed sales included — they are struck
+// through rather than hidden, because a missing row is not an explanation.
 const salesInScope = (siteId) => db.sales.filter((s) => inSite(s, siteId));
 
 /* --- credit ------------------------------------------------- */
@@ -228,13 +231,36 @@ function paidMap() {
   return _paidCache.map;
 }
 
+/* --- reversals ------------------------------------------------
+   A sale is never edited or deleted. Cancelling one appends a reversal
+   pointing at it, so the ledger keeps both the original and the
+   correction. Everything that counts money therefore has to ask whether
+   a sale still stands — a reversed sale is history, not takings. */
+let _reversedCache = { rev: -1, map: new Map() };
+function reversalMap() {
+  if (_reversedCache.rev !== _rev) {
+    const m = new Map();
+    for (const r of db.reversals) if (!m.has(r.saleId)) m.set(r.saleId, r);
+    _reversedCache = { rev: _rev, map: m };
+  }
+  return _reversedCache.map;
+}
+const reversalOf = (saleId) => reversalMap().get(saleId) || null;
+const isReversed = (sale) => reversalMap().has(sale.id || sale);
+
+// Every sale that still counts, in scope.
+const liveSales = (siteId) => db.sales.filter((s) => inSite(s, siteId) && !isReversed(s));
+
+// A reversed sale owes nothing: the charge itself was undone.
 const saleOutstanding = (sale) =>
-  sale.pay === "credit" ? Math.max(0, sale.price - (paidMap().get(sale.id) || 0)) : 0;
+  sale.pay === "credit" && !isReversed(sale)
+    ? Math.max(0, sale.price - (paidMap().get(sale.id) || 0))
+    : 0;
 
 const accountById = (id) => db.accounts.find((a) => a.id === id) || null;
 
 const accountOpenSales = (accountId) => db.sales
-  .filter((s) => s.accountId === accountId && s.pay === "credit" && saleOutstanding(s) > 0)
+  .filter((s) => s.accountId === accountId && s.pay === "credit" && !isReversed(s) && saleOutstanding(s) > 0)
   .sort((a, b) => a.soldAt.localeCompare(b.soldAt));
 
 const accountBalance = (accountId) =>
@@ -323,7 +349,8 @@ const closingFor = (userId, period, siteId) => db.closings.find((c) =>
 // The month-end picture for one operator (or all, when userId is null).
 function buildReport(userId, period, siteId) {
   const sales = db.sales.filter((s) =>
-    (!userId || s.agentId === userId) && inSite(s, siteId) && inPeriod(s.soldAt, period));
+    (!userId || s.agentId === userId) && inSite(s, siteId)
+    && inPeriod(s.soldAt, period) && !isReversed(s));
   const payments = db.payments.filter((p) =>
     (!userId || p.receivedBy === userId) && inPeriod(p.receivedAt, period) &&
     (!siteId || (accountById(p.accountId) || {}).siteId === siteId));

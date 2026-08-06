@@ -91,7 +91,7 @@ function renderAgentLog() {
   const user = currentUser();
   const today = dayKey(new Date());
   const mine = db.sales
-    .filter((s) => user && s.agentId === user.id && dayKey(s.soldAt) === today)
+    .filter((s) => user && s.agentId === user.id && dayKey(s.soldAt) === today && !isReversed(s))
     .sort((a, b) => b.soldAt.localeCompare(a.soldAt));
 
   const cash = mine.filter((s) => s.pay === "cash").reduce((sum, s) => sum + s.price, 0);

@@ -235,7 +235,7 @@
             </div>
             <div class="table-wrap">
               <table class="grid-table" id="sales-table">
-                <thead><tr><th>DATE</th><th>CUSTOMER</th><th>VOUCHER #</th><th>TYPE</th><th class="num">PRICE</th><th>PAYMENT</th><th>AGENT / SITE</th></tr></thead>
+                <thead><tr><th>DATE</th><th>CUSTOMER</th><th>VOUCHER #</th><th>TYPE</th><th class="num">PRICE</th><th>PAYMENT</th><th>AGENT / SITE</th><th></th></tr></thead>
                 <tbody id="sales-tbody"></tbody>
               </table>
               <div id="sales-empty" class="empty" hidden>
@@ -328,7 +328,7 @@
                     <option value="V10">$10 PASS</option><option value="REC">RECON</option>
                   </select>
                   <select id="vf-status" class="field" aria-label="Filter vouchers by status">
-                    <option value="all">ANY STATUS</option><option value="available">AVAILABLE</option><option value="sold">SOLD</option>
+                    <option value="all">ANY STATUS</option><option value="available">AVAILABLE</option><option value="sold">SOLD</option><option value="void">VOID</option>
                   </select>
                   <select id="vf-batch" class="field" aria-label="Filter vouchers by upload batch">
                     <option value="all">ANY BATCH</option>
@@ -685,6 +685,34 @@
         <button class="btn btn-ghost" id="pin-cancel">CANCEL</button>
         <button class="btn btn-primary" id="pin-save">SAVE</button>
       </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-reverse" hidden>
+    <div class="modal-box panel">
+      <header class="modal-head">
+        <h2>REVERSE SALE</h2>
+        <p class="modal-sub">THE SALE STAYS ON THE RECORD, MARKED REVERSED</p>
+      </header>
+      <div class="modal-body">
+        <p class="code-plate" id="rev-title">—</p>
+        <dl class="summary" id="rev-details"></dl>
+        <div id="rev-notes" hidden></div>
+
+        <label class="lbl">WHAT HAPPENS TO THE CODE</label>
+        <div class="seg" id="rev-outcome" role="radiogroup">
+          <button type="button" class="seg-btn is-active" data-outcome="restocked" role="radio" aria-checked="true">↩ BACK TO STOCK</button>
+          <button type="button" class="seg-btn" data-outcome="voided" role="radio" aria-checked="false">⊘ VOID IT</button>
+        </div>
+        <p class="hint" id="rev-outcome-hint">The customer never received this code, so it returns to stock and can be sold again.</p>
+
+        <label class="lbl" for="rev-reason">REASON <span class="dim">— kept with the record</span></label>
+        <input class="field" id="rev-reason" maxlength="200" placeholder="e.g. double-billed after a network drop" />
+      </div>
+      <footer class="modal-foot modal-actions">
+        <button class="btn btn-ghost" id="rev-cancel">CANCEL</button>
+        <button class="btn btn-danger" id="rev-confirm">▸ REVERSE SALE</button>
+      </footer>
     </div>
   </div>
 

@@ -28,6 +28,7 @@ const COLLECTIONS = {
   sales: "sales",
   payments: "payments",
   closings: "closings",
+  reversals: "reversals",
 };
 
 /* ------------------------------------------------------------
@@ -346,7 +347,7 @@ const Backend = {
     // "in" takes at most 30 values; chunk so a widely-assigned agent still works.
     const chunks = [];
     for (let i = 0; i < mySites.length; i += 30) chunks.push(mySites.slice(i, i + 30));
-    for (const key of ["vouchers", "accounts", "sales", "payments"]) {
+    for (const key of ["vouchers", "accounts", "sales", "payments", "reversals"]) {
       for (const chunk of chunks) add(key, [store.where("siteId", "in", chunk)]);
     }
     // An agent reads only their own closed months.
@@ -592,6 +593,75 @@ const Backend = {
       }
     }
     throw giveUp();
+  },
+
+  /* ---------------- reversing a sale ---------------- */
+  // Undoes a sale in one commit: the reversal record is written and the
+  // voucher is put back, or neither happens. Doing it in two writes is how a
+  // network drop leaves a voucher in stock that some report still counts as
+  // sold — the exact shape of fault this exists to correct.
+  //
+  // The sale document is never touched. It is immutable by rule, and keeping
+  // it is the point: the ledger shows the sale and the reversal beside it.
+  async reverseSale(sale, { outcome, reason, paidSoFar }) {
+    if (!this.ready) throw new Error("NO_CONNECTION");
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      throw new Error("NO_CONNECTION");
+    }
+    const store = await this.ensureStore();
+    const me = currentUser();
+
+    const record = {
+      // The reversal is stored under the sale's own id, so one sale can only
+      // ever have one. Two administrators reversing the same sale from
+      // different tills would otherwise both succeed — and if one chose to
+      // restock while the other voided, the code's fate came down to which
+      // write landed second. The database refuses the second now.
+      id: sale.id,
+      saleId: sale.id,
+      siteId: sale.siteId,
+      voucherId: sale.voucherId || "",
+      voucherCode: sale.voucherCode || "",
+      customer: sale.customer || "",
+      amount: sale.price || 0,
+      pay: sale.pay,
+      accountId: sale.accountId || null,
+      // What was already collected against this sale when it was cancelled.
+      // Nobody can reconstruct that later, and it is what tells the operator
+      // whether a refund is owed.
+      paidAtReversal: paidSoFar || 0,
+      outcome,                       // restocked | voided
+      reason: String(reason || "").trim().slice(0, 200),
+      soldAt: sale.soldAt,
+      agentId: sale.agentId,
+      agentName: sale.agentName || "",
+      reversedBy: me ? me.id : this.uid,
+      reversedByName: me ? me.name : "",
+      reversedAt: new Date().toISOString(),
+    };
+
+    await store.runTransaction(this.db, async (tx) => {
+      // Read first: Firestore requires every read before any write.
+      const vRef = sale.voucherId ? store.doc(this.db, COLLECTIONS.vouchers, sale.voucherId) : null;
+      const vSnap = vRef ? await tx.get(vRef) : null;
+      const rRef = store.doc(this.db, COLLECTIONS.reversals, record.id);
+      const already = await tx.get(rRef);
+      if (already.exists()) throw new Error("ALREADY_REVERSED");
+
+      const body = Object.assign({}, record);
+      delete body.id;
+      tx.set(rRef, body);
+
+      if (vSnap && vSnap.exists()) {
+        // "voided" is for a code the customer already has: it must never be
+        // handed to anyone else, so it leaves stock rather than returning.
+        tx.update(vRef, {
+          status: outcome === "restocked" ? "available" : "void",
+          soldAt: null,
+        });
+      }
+    });
+    return record;
   },
 
   /* ---------------- diagnostics ---------------- */

@@ -232,8 +232,9 @@ firebase emulators:start --only firestore,functions,auth --project nexus-pos-fn-
 
 # terminal 2
 cd tests && npm install
-node tests/rules.test.mjs          # 35 authorization checks
+node tests/rules.test.mjs          # 43 authorization checks
 node tests/functions.test.mjs      # 21 server-side auth + selling checks
+node tests/reversal.test.mjs       # 12 checks, needs a static server too
 ```
 
 A third suite audits the layout. It needs Playwright and the app on a static
@@ -270,6 +271,9 @@ vouchers/{id}    code, type, siteId, status, batch, uploadedAt, soldAt
 accounts/{id}    name, phone, siteId, createdAt
 sales/{id}       customer, phone, accountId, voucherId, voucherCode, type,
                  price, pay, agentId, agentName, siteId, soldAt      ← immutable
+reversals/{saleId}  saleId, siteId, voucherId, voucherCode, amount, pay,
+                 paidAtReversal, outcome, reason, reversedBy,
+                 reversedByName, reversedAt                          ← immutable
 payments/{id}    accountId, siteId, amount, method, note, receivedBy,
                  receivedAt, allocations[{saleId, amount}]           ← immutable
 closings/{id}    userId, siteId, period, generatedAt, totals
@@ -277,6 +281,18 @@ closings/{id}    userId, siteId, period, generatedAt, totals
 
 Balances are never stored — a sale's outstanding amount is always
 `price − allocated`, derived from payment allocations.
+
+**Reversing a sale never edits or deletes it.** A reversal is appended to
+`reversals/`, keyed by the sale's own id so a sale can be reversed exactly
+once — two administrators on different tills cannot both undo the same sale
+and disagree about what became of the code. The reversal and the voucher move
+in one transaction, so a dropped connection cannot restore stock without
+recording why. Everything that counts money asks whether a sale still stands;
+the ledger still shows it, struck through, with the reason and who did it.
+
+A voucher can come back as `available` (nobody received the code) or `void`
+(the customer has it, so it must never be sold again). Voided codes leave
+stock permanently and are excluded from every count.
 
 `payments.siteId` is a copy of its account's site. It has to be on the payment
 itself: the rules can look an account up for a single document read, but not
