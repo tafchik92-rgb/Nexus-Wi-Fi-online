@@ -238,6 +238,7 @@ node tests/reversal.test.mjs       # 12 checks, needs a static server too
 node tests/cross-role.test.mjs     # 8 checks: admin and agent signed in at once
 node tests/staleworker.test.mjs    # 3 checks: a deploy reaches a device that cached the app
 TILLS=20 POOL=8 node tests/contention.test.mjs   # no code issued twice under a race
+node tests/carryover.test.mjs      # debt closed in one month, recovered in the next
 ```
 
 A third suite audits the layout. It needs Playwright and the app on a static

@@ -83,6 +83,14 @@ STILL OUTSTANDING                  amount
 …plus per-voucher-group volumes and settlements by method. **Closing the month
 freezes the totals** into a closing record; CSV export works open or closed.
 
+**Debt is recognised when issued, cash when collected.** An agent who closes a
+month still owed $80 keeps that $80 as the month's outstanding figure for ever
+— it is what was true at close. When the customer pays, the $80 counts as
+collected in *that* month, under DEBT SETTLEMENTS. It is never counted twice,
+and nothing needs reopening or adjusting. The admin report labels the live
+figure **UNPAID TODAY** and the frozen one **UNPAID AT CLOSE** so the two are
+not mistaken for each other.
+
 ### Voucher stock
 Bulk upload by pasting codes, auto-generating unique ones, or **importing
 hotspot exports** (`.xlsx` / `.csv` — e.g. TP-Link Omada `VoucherList` files:

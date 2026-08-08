@@ -726,6 +726,18 @@ function renderAccountsTable(tbodySel, emptySel, tableSel, siteId, adminView) {
   }).join("") || `<tr><td colspan="${adminView ? 7 : 6}" class="cell-none">NO ACCOUNTS MATCH THIS SEARCH</td></tr>`;
 }
 
+// Whether an agent has finished a period. On ALL SITES an agent who works
+// two sites and has closed one is not done, and saying CLOSED would invite
+// the shop to settle up with them early.
+function closedLabel(userId, period, siteId) {
+  if (siteId) return closingFor(userId, period, siteId) ? "CLOSED" : "OPEN";
+  const worked = sitesWorked(userId, period);
+  const closed = closingsFor(userId, period).length;
+  if (closed === 0) return "OPEN";
+  if (worked.length > 1 && closed < worked.length) return `CLOSED ${closed}/${worked.length} SITES`;
+  return "CLOSED";
+}
+
 /* ------------------------------------------------------------
    Admin reports — all agents, one period
    ------------------------------------------------------------ */
@@ -743,7 +755,7 @@ function renderAdminReports() {
     <div class="tile tile-warn">
       <p class="tile-label">CREDIT ISSUED</p>
       <p class="tile-value">${moneyCompact(overall.creditIssued)}</p>
-      <p class="tile-sub">${overall.creditCount} SALE${overall.creditCount === 1 ? "" : "S"} · ${money(overall.unpaidFromPeriod)} STILL UNPAID</p>
+      <p class="tile-sub">${overall.creditCount} SALE${overall.creditCount === 1 ? "" : "S"} · ${money(overall.unpaidFromPeriod)} OF IT STILL UNPAID TODAY</p>
     </div>
     <div class="tile">
       <p class="tile-label">TRANSACTIONS</p>
@@ -792,13 +804,13 @@ function exportReportCSV() {
   const period = $("#rep-period").value || monthKey(new Date());
   const site = currentSiteId();
   const rows = [["NEXUS//POS month-end report", fmtMonth(period), site ? siteName(site) : "ALL SITES"], [],
-    ["Agent", "Code", "Sales", "Cash sales", "Debt collected", "Total cash collected", "Credit issued", "Unpaid from period", "Status"]];
+    ["Agent", "Code", "Sales", "Cash sales", "Debt collected", "Total cash collected", "Credit issued", "Unpaid today", "Status"]];
   for (const u of db.users) {
     const r = buildReport(u.id, period, site);
     if (r.salesCount === 0 && r.paymentsCount === 0) continue;
     rows.push([u.name, u.code, r.salesCount, r.cashSalesTotal, r.debtCollected,
       r.totalCashCollected, r.creditIssued, r.unpaidFromPeriod,
-      closingFor(u.id, period, site) ? "CLOSED" : "OPEN"]);
+      closedLabel(u.id, period, site)]);
   }
   const o = buildReport(null, period, site);
   rows.push([], ["TOTAL", "", o.salesCount, o.cashSalesTotal, o.debtCollected,

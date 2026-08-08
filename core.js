@@ -343,8 +343,24 @@ function inPeriod(iso, period) {
   return d >= start && d < end;
 }
 
+// With a site in scope, only that site's closing counts. On ALL SITES any
+// closing for the period counts — an agent always closes under their own
+// site, so demanding an exact match there showed every agent as OPEN for
+// ever, on the very screen used to check who has closed and handed over.
 const closingFor = (userId, period, siteId) => db.closings.find((c) =>
-  c.userId === userId && c.period === period && (c.siteId || "") === (siteId || "")) || null;
+  c.userId === userId && c.period === period &&
+  (siteId ? (c.siteId || "") === siteId : true)) || null;
+
+// Every site this agent closed for the period — so a multi-site agent who
+// has only closed one of them is not reported as finished.
+const closingsFor = (userId, period) =>
+  db.closings.filter((c) => c.userId === userId && c.period === period);
+
+// The sites an agent actually traded at in a period; nothing to close where
+// they did not work.
+const sitesWorked = (userId, period) => [...new Set(db.sales
+  .filter((s) => s.agentId === userId && inPeriod(s.soldAt, period) && !isReversed(s))
+  .map((s) => s.siteId))];
 
 // The month-end picture for one operator (or all, when userId is null).
 function buildReport(userId, period, siteId) {

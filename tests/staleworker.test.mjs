@@ -25,7 +25,10 @@ if (!chromium) { console.log('Playwright not installed — skipping.'); process.
 
 const APP = path.resolve(import.meta.dirname, '..');
 const SDK_DIR = process.env.NEXUS_SDK_MIRROR || '';
-const PORT = Number(process.env.NEXUS_SIM_PORT || 4210);
+// A free port picked per run: this suite serves its own throwaway copy of
+// the app, and two runs on a fixed port would fight over it.
+const PORT = Number(process.env.NEXUS_SIM_PORT || 0) ||
+  (4300 + Math.floor(Math.random() * 600));
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
 // A throwaway copy of the app we can "deploy" over, mid-test.
