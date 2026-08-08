@@ -237,6 +237,7 @@ node tests/functions.test.mjs      # 21 server-side auth + selling checks
 node tests/reversal.test.mjs       # 12 checks, needs a static server too
 node tests/cross-role.test.mjs     # 8 checks: admin and agent signed in at once
 node tests/staleworker.test.mjs    # 3 checks: a deploy reaches a device that cached the app
+TILLS=20 POOL=8 node tests/contention.test.mjs   # no code issued twice under a race
 ```
 
 A third suite audits the layout. It needs Playwright and the app on a static
@@ -335,6 +336,16 @@ Selling is deliberately *not* a function: the till claims a voucher with a
 Firestore transaction, checked by the security rules. That keeps the hot path
 one round trip instead of two, and leaves the guarantee where it belongs — in
 the database, not in code a client could skip.
+
+A central dispenser handing out codes one at a time would give the same
+guarantee more expensively. Transactions only contend document by document,
+so two tills at different sites never wait on each other; a serialised
+dispenser queues every sale in the shop behind every other, adds a round trip
+and a cold start, and becomes the one thing whose failure stops all selling.
+Cloud Functions also autoscale, so it would need a lock of its own — and the
+natural way to build that lock in Firestore is the transaction the till
+already uses directly. `tests/contention.test.mjs` runs the race the dispenser
+would exist to prevent.
 
 `createStaff`, `resetPin` and friends re-read the caller's record rather than
 trusting the token's role claim, so a demoted admin loses access immediately
