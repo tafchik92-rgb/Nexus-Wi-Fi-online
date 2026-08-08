@@ -236,6 +236,7 @@ node tests/rules.test.mjs          # 43 authorization checks
 node tests/functions.test.mjs      # 21 server-side auth + selling checks
 node tests/reversal.test.mjs       # 12 checks, needs a static server too
 node tests/cross-role.test.mjs     # 8 checks: admin and agent signed in at once
+node tests/staleworker.test.mjs    # 3 checks: a deploy reaches a device that cached the app
 ```
 
 A third suite audits the layout. It needs Playwright and the app on a static

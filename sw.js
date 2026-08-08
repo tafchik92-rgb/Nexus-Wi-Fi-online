@@ -1,9 +1,14 @@
 /* ============================================================
    NEXUS//POS — service worker
 
-   Makes the till launchable quickly and repeatedly: the app shell is
-   cached on install and served from cache first, so a phone in a mine
-   camp opens the terminal instantly whether or not there is signal.
+   The app's own files are fetched from the network first, with the cache
+   as the fallback when there is no answer. Cache-first was faster but
+   silently wrong: the cache name only changes when the build stamps it,
+   and a static deploy never does — so a device that had once cached the
+   app kept running the old JavaScript after every release. An agent on a
+   stale build made the wrong database queries and saw nothing, while an
+   administrator on the same device worked, because the old queries were
+   ones only an administrator is allowed to make.
 
    The Firebase SDK is cached too. Those URLs carry the version in the
    path (…/firebasejs/10.14.1/…), so they are immutable — re-fetching
@@ -49,6 +54,11 @@ self.addEventListener("activate", (e) => {
   );
 });
 
+// How long to wait for the network before falling back to the cached shell.
+// Long enough to prefer fresh code on a slow link, short enough that a dead
+// connection does not hold the launch.
+const NETWORK_TIMEOUT = 2500;
+
 self.addEventListener("fetch", (e) => {
   const { request } = e;
   if (request.method !== "GET") return;
@@ -74,19 +84,27 @@ self.addEventListener("fetch", (e) => {
 
   if (url.origin !== self.location.origin) return;   // live Firebase traffic: never cached
 
-  e.respondWith(
-    caches.match(request).then((hit) => {
-      // Serve instantly from cache, then quietly refresh it for next launch.
-      const network = fetch(request)
-        .then((res) => {
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(VERSION).then((c) => c.put(request, copy));
-          }
-          return res;
-        })
-        .catch(() => hit || caches.match("./index.html"));
-      return hit || network;
-    })
-  );
+  // Network first for the app's own code, so a deploy takes effect on the
+  // very next launch and two files from different releases can never run
+  // together. The cache is what makes the till open without a signal.
+  e.respondWith((async () => {
+    const cache = await caches.open(VERSION);
+    try {
+      const res = await Promise.race([
+        fetch(request),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("slow")), NETWORK_TIMEOUT)),
+      ]);
+      if (res && res.ok) cache.put(request, res.clone());
+      return res;
+    } catch (_) {
+      const hit = await cache.match(request);
+      if (hit) return hit;
+      // A navigation with nothing cached for it still gets the shell.
+      if (request.mode === "navigate") {
+        const shell = await cache.match("./index.html");
+        if (shell) return shell;
+      }
+      throw new Error("offline and not cached: " + url.pathname);
+    }
+  })());
 });

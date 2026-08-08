@@ -96,6 +96,14 @@ the security rules refuse it regardless of what the client asks.
 
 ## 📱 Install on a phone
 
+The app's own files are fetched **network first**, with the cache as the
+fallback when there is no answer. Cache-first was faster but silently wrong:
+the cache name only changes when a build stamps it, and a static deploy never
+does — so a device that had once cached the app kept running the previous
+release. A new agent on stale code queried the way the old build did, was
+refused, and saw an empty till; an administrator on the same device worked,
+because those are queries only an administrator may make.
+
 The app is installable. Sign-in screen and header both carry an **⤓ INSTALL**
 button: on Chrome/Edge/Android it fires the browser's own install prompt, and
 on iOS — which has no such prompt — it explains the Share → Add to Home Screen

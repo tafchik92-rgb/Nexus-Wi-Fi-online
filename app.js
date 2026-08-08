@@ -797,6 +797,23 @@ function wireInstall() {
 // must never block the app.
 function registerServiceWorker() {
   if (!("serviceWorker" in navigator) || location.protocol === "file:") return;
+
+  // When a new worker replaces an old one, this page is still running whatever
+  // the old one served — which for one launch can be the previous release. An
+  // agent on stale code makes queries the rules refuse and sees an empty till,
+  // while an administrator on the same device is fine, because the old queries
+  // are ones only an administrator may make. Reload once so the page is running
+  // one release, not two.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    // Nothing stale on a first install, and never yank the page out from under
+    // somebody mid-sale — by then the app is on screen and it can wait.
+    if (!hadController || reloading || !$("#app").hidden) return;
+    reloading = true;
+    location.reload();
+  });
+
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("sw.js").catch(() => {});
   });
