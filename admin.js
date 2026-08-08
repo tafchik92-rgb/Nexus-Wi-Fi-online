@@ -832,6 +832,9 @@ function renderCloud() {
     (Backend.error ? `<span class="cell-sub owed">${esc(Backend.error)}</span>` : "");
 
   $("#cloud-summary").innerHTML = `
+    <div><dt>APP VERSION</dt><dd>${esc(AppVersion.full)}${
+      AppVersion.stamped ? `<span class="cell-sub">built ${esc(AppVersion.builtLabel)}</span>` : ""}${
+      AppVersion.updateAvailable() ? `<span class="cell-sub owed">v${esc(AppVersion.latest.release)} released — reload to update</span>` : ""}</dd></div>
     <div><dt>PROJECT</dt><dd>${esc((Backend.config || {}).projectId || "—")}</dd></div>
     <div><dt>DATABASE</dt><dd>${esc((Backend.config || {}).firestoreDatabaseId || "(default)")}</dd></div>
     <div><dt>SIGNED IN AS</dt><dd>${esc((currentUser() || {}).name || "—")}</dd></div>

@@ -128,7 +128,14 @@ body {
 .brand-copy p {
   margin: 1px 0 0; font-size: 10px; letter-spacing: 0.34em; color: var(--ink-3);
 }
-.brand-ver { color: var(--acc); letter-spacing: 0.1em; }
+/* Pinned to the foot of the screen rather than left as a flex sibling of the
+   panel, which would sit it alongside. Whichever of the sign-in, connect,
+   offline or first-run panels is showing, the build sits under it. */
+.login-ver {
+  position: absolute; left: 0; right: 0; bottom: 16px; margin: 0;
+  text-align: center; pointer-events: none;
+  font: 500 10px/1.5 var(--font-mono); letter-spacing: 0.16em; color: var(--ink-3);
+}
 
 /* main tabs */
 .tabs {
@@ -169,6 +176,24 @@ body {
 @keyframes pulse { 50% { opacity: 0.35; } }
 .status-clock { color: var(--acc); font-size: 13px; }
 .status-date { color: var(--ink-3); }
+
+/* The version marker. A button, not a label: tapping it reports the build in
+   full — there is no hover on a till — and once a newer release is deployed
+   it becomes the way to take it. */
+.ver-chip {
+  background: none; border: 0; cursor: pointer;
+  font: inherit; letter-spacing: inherit; color: var(--ink-3);
+  /* The status bar's type is 11px on a 1 line-height, which is nowhere near
+     a thumb. Padding out to a real tap target, pulled back by an equal
+     negative margin so the bar itself does not grow. */
+  padding: 7px 6px; margin: -7px -6px;
+}
+.ver-chip:hover { color: var(--acc); }
+/* A release is out and this till is not on it. Loud enough to be noticed
+   between customers, not so loud it reads as a fault. */
+.ver-chip.is-stale { color: var(--amber); animation: verpulse 2.4s ease-in-out infinite; }
+@keyframes verpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@media (prefers-reduced-motion: reduce) { .ver-chip.is-stale { animation: none; } }
 
 /* ------------------------------------------------------------
    Layout shell

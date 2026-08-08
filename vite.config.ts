@@ -6,19 +6,40 @@ import {defineConfig} from 'vite';
 // cannot bundle them and drops them from the build. Copy them into dist
 // verbatim, otherwise the built page loads no JavaScript at all.
 const STATIC_SCRIPTS = [
-  'firebase-config.js', 'sw.js', 'manifest.webmanifest',
+  'version.js', 'firebase-config.js', 'sw.js', 'manifest.webmanifest',
   'importer.js', 'backend.js', 'core.js', 'admin.js', 'agent.js', 'app.js',
 ];
+
+// One stamp per build, in UTC, shared by the service worker's cache name and
+// the version the app puts on screen. They have to be the same value: telling
+// the two apart is how a till that is *serving* an old release from its own
+// cache is distinguished from one that simply has not been updated yet.
+const buildStamp = () => {
+  const d = new Date(), p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}-` +
+         `${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
+};
 
 const copyStaticScripts = () => ({
   name: 'copy-static-scripts',
   closeBundle() {
     const out = path.resolve(__dirname, 'dist');
+    const stamp = buildStamp();
     fs.mkdirSync(out, {recursive: true});
     for (const file of STATIC_SCRIPTS) {
       const from = path.resolve(__dirname, file);
       if (fs.existsSync(from)) fs.copyFileSync(from, path.resolve(out, file));
     }
+
+    // deploy.sh stamps the source tree before building (Firebase Hosting
+    // serves that tree directly), so the placeholder may already be gone —
+    // in which case leave the stamp it wrote rather than fighting over it.
+    const verOut = path.resolve(out, 'version.js');
+    if (fs.existsSync(verOut)) {
+      fs.writeFileSync(verOut,
+        fs.readFileSync(verOut, 'utf8').replace('__BUILD_STAMP__', stamp));
+    }
+
     // Teach the service worker the hashed asset names Vite just produced,
     // so the precache covers the built CSS rather than the source filename.
     const swOut = path.resolve(out, 'sw.js');
@@ -29,7 +50,7 @@ const copyStaticScripts = () => ({
         .map((m) => `"./${m[1]}"`);
       let sw = fs.readFileSync(swOut, 'utf8');
       if (assets.length) sw = sw.replace('/*__BUILD_ASSETS__*/', assets.join(', '));
-      sw = sw.replace('/*__BUILD_TIME__*/', Date.now().toString(36));
+      sw = sw.replace('/*__BUILD_TIME__*/', stamp);
       fs.writeFileSync(swOut, sw);
     }
 

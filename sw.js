@@ -25,7 +25,7 @@ const SDK_CACHE = "nexus-pos-sdk";
 const SDK_URL = /^https:\/\/www\.gstatic\.com\/firebasejs\/[\d.]+\/firebase-[a-z-]+\.js$/;
 const SHELL = [
   "./", "./index.html", "./styles.css",
-  "./firebase-config.js", "./importer.js", "./backend.js",
+  "./version.js", "./firebase-config.js", "./importer.js", "./backend.js",
   "./core.js", "./admin.js", "./agent.js", "./app.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-maskable-512.png",
@@ -83,6 +83,11 @@ self.addEventListener("fetch", (e) => {
   }
 
   if (url.origin !== self.location.origin) return;   // live Firebase traffic: never cached
+
+  // The app's own "is there a newer build?" probe. Its URL is unique every
+  // time, so caching it would grow the cache without bound and never be read
+  // again — and the whole point of the request is to reach the server.
+  if (url.searchParams.has("fresh")) return;
 
   // Network first for the app's own code, so a deploy takes effect on the
   // very next launch and two files from different releases can never run

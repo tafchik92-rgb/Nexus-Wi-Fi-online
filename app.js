@@ -161,6 +161,42 @@ function cloudError(e) {
 }
 
 const DIAG_ICON = { ok: "✓", warn: "!", fail: "✗" };
+
+// The first diagnostic: what this device is running, and whether it is the
+// build that is actually deployed. Reported as a warning rather than a
+// failure — stale code is a real problem, but the app in front of you is
+// still working, and a red cross here would send people hunting the wrong one.
+async function versionCheck() {
+  const name = "App version";
+  // Not the probe's return value: an offline probe answers null while a
+  // newer build found a minute ago is still the truth.
+  const [, worker] = await Promise.all([
+    AppVersion.checkForUpdate(),
+    AppVersion.workerBuild(),
+  ]);
+  const latest = AppVersion.latest;
+
+  if (!AppVersion.stamped) {
+    return { level: "warn", name,
+      detail: `${AppVersion.full} — served from a source checkout, so there is no build stamp to compare.`,
+      fix: "Deploy with `bash deploy.sh --with-hosting` (or `npm run build`) to stamp the build." };
+  }
+
+  if (AppVersion.updateAvailable()) {
+    return { level: "warn", name,
+      detail: `Running ${AppVersion.full}, built ${AppVersion.builtLabel}. Version ${latest.release} (build ${latest.build}) is deployed.`,
+      fix: "Tap the version in the header, or reload this page, to move this till onto it." };
+  }
+
+  if (worker && worker !== AppVersion.build) {
+    return { level: "warn", name,
+      detail: `${AppVersion.full}, but the cached app shell on this device is build ${worker}.`,
+      fix: "Reload the page — the two will match once the worker has taken the new shell." };
+  }
+
+  return { level: "ok", name,
+    detail: `${AppVersion.full}, built ${AppVersion.builtLabel}. This is the deployed build.` };
+}
 async function runDiagnostics() {
   const modal = $("#modal-diag");
   const list = $("#diag-list");
@@ -169,11 +205,19 @@ async function runDiagnostics() {
   $("#diag-summary").textContent = "";
   try {
     if (!Backend.config) Backend.loadConfig();
-    const results = await Backend.diagnose();
+    // Which build is answering matters before any of the backend results are
+    // read: half of "the app is broken" has turned out to be one device
+    // running code an older release left behind.
+    const results = [await versionCheck()].concat(await Backend.diagnose());
     const fails = results.filter((r) => r.level === "fail").length;
-    $("#diag-summary").innerHTML = fails === 0
-      ? `<span class="chip chip-ok"><i></i>ALL CLEAR</span>`
-      : `<span class="chip chip-sold"><i></i>${fails} PROBLEM${fails === 1 ? "" : "S"}</span>`;
+    // Warnings used to be invisible up here, so the header could read ALL
+    // CLEAR with an amber row directly beneath it.
+    const warns = results.filter((r) => r.level === "warn").length;
+    $("#diag-summary").innerHTML = fails > 0
+      ? `<span class="chip chip-sold"><i></i>${fails} PROBLEM${fails === 1 ? "" : "S"}</span>`
+      : warns > 0
+        ? `<span class="chip chip-v10"><i></i>${warns} WARNING${warns === 1 ? "" : "S"}</span>`
+        : `<span class="chip chip-ok"><i></i>ALL CLEAR</span>`;
     list.innerHTML = results.map((r) => `
       <li class="diag-row diag-${r.level}">
         <span class="diag-icon">${DIAG_ICON[r.level] || "?"}</span>
@@ -790,6 +834,71 @@ function wireInstall() {
 }
 
 /* ------------------------------------------------------------
+   Version marker
+
+   Shown in two places, for two different moments: in the header while
+   the till is in use, and on the sign-in screen — which is where a till
+   that will not work gets looked at, and where "what version is this?"
+   is the first question worth answering.
+
+   It is a marker, not decoration. Once a newer build is deployed the
+   header turns amber and becomes the button that takes it, so an update
+   is something staff can see and apply themselves without being talked
+   through a hard refresh over the phone.
+   ------------------------------------------------------------ */
+function renderVersion() {
+  const stale = AppVersion.updateAvailable();
+
+  const head = $("#app-version");
+  if (head) {
+    head.textContent = stale ? `${AppVersion.label} ▸ UPDATE` : AppVersion.label;
+    head.classList.toggle("is-stale", stale);
+    head.title = stale
+      ? `Version ${AppVersion.latest.release} has been released — tap to update this till`
+      : AppVersion.stamped
+        ? `${AppVersion.full} — built ${AppVersion.builtLabel}`
+        : `${AppVersion.full} — running from a source checkout, not a build`;
+  }
+
+  const foot = $("#login-version");
+  if (foot) {
+    foot.textContent = AppVersion.stamped
+      ? `${AppVersion.full} · ${AppVersion.builtLabel}`
+      : AppVersion.full;
+  }
+}
+
+// Tapping the marker: take the update if there is one, otherwise just say
+// what this till is running. On a phone there is no hover, so the title
+// attribute alone would never be readable.
+async function versionTapped() {
+  if (AppVersion.updateAvailable()) {
+    toast("Updating this till…");
+    await AppVersion.applyUpdate();
+    return;
+  }
+  const worker = await AppVersion.workerBuild();
+  const skew = worker && AppVersion.stamped && worker !== AppVersion.build;
+  toast(
+    `${AppVersion.full}${AppVersion.stamped ? ` · built ${AppVersion.builtLabel}` : ""}` +
+    (skew ? ` · cached shell ${worker} — reload to clear` : ""),
+    skew ? "err" : "ok");
+}
+
+function wireVersion() {
+  renderVersion();
+  const head = $("#app-version");
+  if (head) head.addEventListener("click", versionTapped);
+
+  // Tills stay open all day, so a release deployed at noon would otherwise
+  // go unnoticed until somebody happened to reload.
+  AppVersion.watch((latest) => {
+    renderVersion();
+    toast(`Version ${latest.release} is available — tap the version in the header to update`);
+  });
+}
+
+/* ------------------------------------------------------------
    Boot
    ------------------------------------------------------------ */
 // The service worker caches the app shell so the till launches instantly and
@@ -881,6 +990,7 @@ async function connectAndRestore() {
     Backend.loadConfig();
     wire();
     wireInstall();
+    wireVersion();
     tickClock();
     setInterval(tickClock, 1000);
 

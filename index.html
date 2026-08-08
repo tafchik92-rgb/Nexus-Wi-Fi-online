@@ -144,6 +144,10 @@
       </form>
       <p class="login-foot">This only succeeds while the project has no staff at all. Stuck on an error? <button type="button" class="link-btn" data-action="diagnose">Run backend diagnostics</button>.</p>
     </div>
+
+    <!-- Which build this device is on, readable before anyone signs in —
+         which is exactly when a till that will not work gets looked at. -->
+    <p class="login-ver" id="login-version"></p>
   </div>
 
   <!-- ============================= APP ============================= -->
@@ -159,7 +163,7 @@
         </svg>
         <div class="brand-copy">
           <h1>NEXUS<span class="brand-sep">//</span>POS</h1>
-          <p>WI&#8209;FI VOUCHER TERMINAL <span class="brand-ver">v2.0</span></p>
+          <p>WI&#8209;FI VOUCHER TERMINAL</p>
         </div>
       </div>
 
@@ -182,6 +186,10 @@
       </div>
       <div class="statusbar">
         <span class="mode-chip" id="mode-chip" title="Whether this till is talking to the shop"></span>
+        <!-- In the status bar rather than under the wordmark: the tagline is
+             hidden below 1400px, and the build a till is running is exactly
+             what you need on the phone it is running on. -->
+        <button type="button" class="status-item ver-chip" id="app-version" title="App version">v—</button>
         <span class="status-item"><span class="status-dot" aria-hidden="true"></span>ONLINE</span>
         <span class="status-item status-clock"><span id="clock-time">--:--:--</span></span>
         <span class="status-item status-date" id="clock-date"></span>
@@ -756,6 +764,7 @@
   <div id="toasts" class="toasts" aria-live="polite"></div>
   <div id="chart-tip" class="chart-tip" hidden></div>
 
+  <script src="version.js"></script>
   <script src="firebase-config.js"></script>
   <script src="importer.js"></script>
   <script src="backend.js"></script>

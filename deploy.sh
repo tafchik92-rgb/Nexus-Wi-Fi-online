@@ -128,15 +128,24 @@ if [ "$WITH_HOSTING" = "1" ]; then
   # sitting behind it. Only `npm run build` substituted that placeholder, so
   # deploying the plain static files left it constant — and tills kept running
   # the previous version. Stamp it here, whichever way we deploy.
-  say "Stamping the service-worker cache version"
+  #
+  # version.js carries the same stamp, so the version the app shows on
+  # screen names the build it is running rather than a number typed in by
+  # hand. Both files get one value: when they disagree, the till is serving
+  # an old shell out of its own cache, and the app says so.
+  STAMP="$(date -u +%Y%m%d-%H%M%S)"
+  say "Stamping this build: $STAMP"
   node -e '
     const fs = require("fs");
     const stamp = process.argv[1];
-    const s = fs.readFileSync("sw.js", "utf8")
-      .replace(/const VERSION = "nexus-pos-[^"]*";/, `const VERSION = "nexus-pos-${stamp}";`);
-    fs.writeFileSync("sw.js", s);
-  ' "$(date -u +%Y%m%d%H%M%S)"
-  ok "sw.js stamped"
+    const put = (file, re, to) => {
+      if (!fs.existsSync(file)) return;
+      fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(re, to));
+    };
+    put("sw.js", /const VERSION = "nexus-pos-[^"]*";/, `const VERSION = "nexus-pos-${stamp}";`);
+    put("version.js", /const APP_BUILD = "[^"]*";/, `const APP_BUILD = "${stamp}";`);
+  ' "$STAMP"
+  ok "sw.js and version.js stamped"
 
   say "Building the web app"
   npm install --no-audit --no-fund --silent

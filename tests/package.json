@@ -10,7 +10,8 @@
     "test:cross-role": "node cross-role.test.mjs",
     "test:staleworker": "node staleworker.test.mjs",
     "test:contention": "node contention.test.mjs",
-    "test:carryover": "node carryover.test.mjs"
+    "test:carryover": "node carryover.test.mjs",
+    "test:version": "node version.test.mjs"
   },
   "dependencies": {
     "@firebase/rules-unit-testing": "^5.0.1",
