@@ -271,15 +271,31 @@ function openStatement(accountId) {
         <td class="num owed-strong">${money(saleOutstanding(s))}</td>
       </tr>`).join("") + `</tbody></table>`;
 
+  // Which vouchers each payment actually cleared. Payments settle the oldest
+  // debt first, so this is what answers "has last month's balance been
+  // recovered yet" — without it a settlement is just a number and a date.
+  const clearedBy = (p) => (p.allocations || []).map((a) => {
+    const sale = db.sales.find((x) => x.id === a.saleId);
+    if (!sale) return null;
+    const part = a.amount < sale.price ? ` (${money(a.amount)} of ${money(sale.price)})` : "";
+    return `${sale.voucherCode}${part} · ${fmtDate(sale.soldAt)}`;
+  }).filter(Boolean);
+
   $("#stmt-pays").innerHTML = pays.length === 0
     ? `<p class="hint">No payments recorded yet.</p>`
-    : `<table class="grid-table"><thead><tr><th>DATE</th><th class="num">AMOUNT</th><th>METHOD</th><th>TAKEN BY</th></tr></thead><tbody>` +
-      pays.map((p) => `<tr>
+    : `<table class="grid-table"><thead><tr><th>DATE</th><th class="num">AMOUNT</th><th>METHOD</th><th>TAKEN BY</th><th>CLEARED</th></tr></thead><tbody>` +
+      pays.map((p) => {
+        const cleared = clearedBy(p);
+        return `<tr>
         <td class="cell-date">${fmtDateTime(p.receivedAt)}</td>
         <td class="num">${money(p.amount)}</td>
         <td>${esc(PAY_METHODS[p.method] || p.method)}</td>
-        <td>${esc(p.receivedByName)}</td>
-      </tr>`).join("") + `</tbody></table>`;
+        <td>${esc(p.receivedByName)}${p.note ? `<span class="cell-sub">${esc(p.note)}</span>` : ""}</td>
+        <td class="cell-code">${cleared.length
+          ? cleared.map((c) => `<span class="cell-sub">${esc(c)}</span>`).join("")
+          : "<span class=\"cell-sub\">—</span>"}</td>
+      </tr>`;
+      }).join("") + `</tbody></table>`;
 
   $("#stmt-settle").dataset.id = accountId;
   $("#stmt-settle").hidden = balance <= 0;
