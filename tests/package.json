@@ -6,7 +6,8 @@
     "test:rules": "node rules.test.mjs",
     "test:functions": "node functions.test.mjs",
     "test:responsive": "node responsive.test.mjs",
-    "test:reversal": "node reversal.test.mjs"
+    "test:reversal": "node reversal.test.mjs",
+    "test:cross-role": "node cross-role.test.mjs"
   },
   "dependencies": {
     "@firebase/rules-unit-testing": "^5.0.1",

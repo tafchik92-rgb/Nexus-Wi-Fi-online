@@ -55,6 +55,12 @@ deleted. The reversal is appended alongside it, so the row stays visible,
 struck through, with the reason and who reversed it. Takings, debts, reports
 and the agent's own day all stop counting it.
 
+Agents see it immediately — their own daily tally, the customer's debt, the
+restocked code in the terminal and their month-end totals all follow within a
+second or two, with nothing to refresh. The exception is a month they have
+already closed: those totals are frozen by design, and the dialog says so
+before you confirm.
+
 The code then either **returns to stock** (nobody received it) or is **voided**
 (the customer has it, so it must never be sold again). Reversals are keyed by
 the sale, so one sale can be reversed exactly once no matter how many tills

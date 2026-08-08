@@ -13,7 +13,8 @@
     "test:rules": "node tests/rules.test.mjs",
     "test:functions": "node tests/functions.test.mjs",
     "test:responsive": "node tests/responsive.test.mjs",
-    "test:reversal": "node tests/reversal.test.mjs"
+    "test:reversal": "node tests/reversal.test.mjs",
+    "test:cross-role": "node tests/cross-role.test.mjs"
   },
   "dependencies": {},
   "devDependencies": {
