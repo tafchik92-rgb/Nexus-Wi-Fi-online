@@ -123,7 +123,7 @@ refused, and saw an empty till; an administrator on the same device worked,
 because those are queries only an administrator may make.
 
 **Which build a till is on is now visible**, which is what made that failure
-so hard to see. The status bar carries a version marker — `v2.1` — and the
+so hard to see. The status bar carries a version marker — `v2.2` — and the
 sign-in screen spells it out in full: release, build stamp and the time it was
 built. The build stamp is written by `deploy.sh` and by `npm run build`, so it
 changes on every deploy; two devices showing the same stamp really are running
@@ -131,7 +131,7 @@ the same code.
 
 The marker also watches for releases. It re-checks every fifteen minutes and
 whenever the tab is brought back into view, and when a newer build is deployed
-it turns amber and reads **v2.1 ▸ UPDATE**. Tapping it moves that till onto the
+it turns amber and reads **v2.2 ▸ UPDATE**. Tapping it moves that till onto the
 new build — reloading alone is not enough, because Hosting gives scripts an
 hour of cache life and a reload only revalidates the page itself, not the
 scripts it loads. Admin → CLOUD and the diagnostics report the same thing,

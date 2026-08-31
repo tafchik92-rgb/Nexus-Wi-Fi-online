@@ -13,7 +13,7 @@
    Two numbers, because they answer different questions:
 
      RELEASE  a human number, bumped by hand when a release lands. What
-              you say out loud: "they're on 2.1".
+              you say out loud: "they're on 2.2".
      BUILD    a UTC stamp written by the build. Changes on every deploy,
               so two devices showing the same build really are running
               the same code.
@@ -26,7 +26,7 @@
    ============================================================ */
 
 // Bumped by hand. Keep in step with package.json.
-const APP_RELEASE = "2.1";
+const APP_RELEASE = "2.2";
 
 // Rewritten in place by vite.config.ts and deploy.sh — the whole line is
 // matched, so do not reformat it.
