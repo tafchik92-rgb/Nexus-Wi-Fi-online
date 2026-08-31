@@ -23,9 +23,18 @@
       "firestore.indexes.json",
       "functions/**",
       "tests/**",
+      "dist/**",
       "**/.*",
       "**/node_modules/**",
-      "*.md"
+      "**/*.log",
+      "*.md",
+      "deploy.sh",
+      "package.json",
+      "package-lock.json",
+      "tsconfig.json",
+      "vite.config.ts",
+      "metadata.json",
+      "firebase-applet-config.json"
     ],
     "headers": [
       {

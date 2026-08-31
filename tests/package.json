@@ -12,7 +12,8 @@
     "test:contention": "node contention.test.mjs",
     "test:carryover": "node carryover.test.mjs",
     "test:version": "node version.test.mjs",
-    "test:suspend": "node suspend.test.mjs"
+    "test:suspend": "node suspend.test.mjs",
+    "test:deployset": "node deployset.test.mjs"
   },
   "dependencies": {
     "@firebase/rules-unit-testing": "^5.0.1",

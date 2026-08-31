@@ -204,6 +204,7 @@ payment allocations, never stored, so a sale's outstanding amount is always
 | `index.html` | login screen, app shell, all views and modals |
 | `styles.css` | the sci-fi design system |
 | `version.js` | the release number, the build stamp, and the update check |
+| `firebase.json` | Hosting serves the repo root, so its `ignore` list is what keeps everything else off the web — `tests/deployset.test.mjs` holds it |
 | `core.js` | data model, session, queries, formatting |
 | `admin.js` | dashboard, team, sites, vouchers, credit oversight, reports |
 | `agent.js` | terminal, credit accounts, settlement, month-end |

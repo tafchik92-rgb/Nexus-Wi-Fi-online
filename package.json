@@ -19,7 +19,8 @@
     "test:contention": "node tests/contention.test.mjs",
     "test:carryover": "node tests/carryover.test.mjs",
     "test:version": "node tests/version.test.mjs",
-    "test:suspend": "node tests/suspend.test.mjs"
+    "test:suspend": "node tests/suspend.test.mjs",
+    "test:deployset": "node tests/deployset.test.mjs"
   },
   "dependencies": {},
   "devDependencies": {
