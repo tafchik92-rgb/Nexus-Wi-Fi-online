@@ -12,3 +12,9 @@ package-lock.json
 # stops the app you deleted from being committed back on every AI Studio sync.
 # index.html loads the NEXUS//POS scripts directly and never references src/.
 src/
+
+# Also AI Studio's doing: it touches an empty bun.lock into the workspace even
+# though nothing here uses bun. Untracked and unignored, it showed as a change
+# against git for ever — and a pull cannot clear it, because pulling never
+# deletes untracked files.
+bun.lock
