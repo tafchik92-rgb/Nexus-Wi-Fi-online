@@ -25,6 +25,30 @@ service cloud.firestore {
       return isAdmin() || (isStaff() && siteId in mySites());
     }
 
+    // Suspension has to bite the moment it is set.
+    //
+    // Role and site scope ride in a custom token that stays valid for up to an
+    // hour, and the token was all these rules read — so suspending an agent
+    // who was already signed in did nothing until they signed out, and they
+    // went on issuing vouchers and taking money in the meantime. The staff
+    // directory is the live answer, so writes ask it.
+    //
+    // A member whose record has been deleted has no document to read, the
+    // get() fails, and the write is refused — which is what should happen.
+    function amActive() {
+      return signedIn()
+             && get(/databases/$(database)/documents/staff/$(uid())).data.status == 'active';
+    }
+    function activeAdmin() { return isAdmin() && amActive(); }
+    function activeStaff() { return isStaff() && amActive(); }
+
+    // Deliberately not applied to reads. A suspended till still needs to
+    // receive the very update that suspends it — that is how the app knows to
+    // close itself and say why. Cutting its listeners off instead leaves a
+    // screen that has simply stopped working, which is the failure mode that
+    // has already cost this shop an afternoon. Writes are the harm; reads are
+    // what make stopping them visible.
+
     function unchanged(field) {
       return request.resource.data[field] == resource.data[field];
     }
@@ -46,55 +70,55 @@ service cloud.firestore {
       // Creation and PIN changes go through Cloud Functions so that a
       // client can never mint itself an admin or set its own PIN.
       allow create: if false;
-      allow update: if isAdmin()
+      allow update: if activeAdmin()
                     && unchanged('code')
                     && request.resource.data.role in ['admin', 'agent'];
-      allow delete: if isAdmin() && staffId != uid();
+      allow delete: if activeAdmin() && staffId != uid();
     }
 
     // ---------- sites ----------
     match /sites/{siteId} {
       allow read:   if isStaff();
-      allow create: if isAdmin() && request.resource.data.keys().hasAll(['name', 'code', 'status']);
-      allow update: if isAdmin();
-      allow delete: if isAdmin();
+      allow create: if activeAdmin() && request.resource.data.keys().hasAll(['name', 'code', 'status']);
+      allow update: if activeAdmin();
+      allow delete: if activeAdmin();
     }
 
     // ---------- vouchers ----------
     match /vouchers/{voucherId} {
       allow read:   if atMySite(resource.data.siteId);
-      allow create: if isAdmin() && request.resource.data.status == 'available';
+      allow create: if activeAdmin() && request.resource.data.status == 'available';
 
       // Admins manage stock. Staff may only flip a voucher from available to
       // sold, at their own site, without rewriting its identity. The client
       // does this inside a Firestore transaction, so two tills racing for the
       // same code cannot both win — the loser retries and takes the next one.
-      allow update: if isAdmin()
+      allow update: if activeAdmin()
                     || (
-                      atMySite(resource.data.siteId)
+                      activeStaff() && atMySite(resource.data.siteId)
                       && resource.data.status == 'available'
                       && request.resource.data.status == 'sold'
                       && unchanged('code') && unchanged('type') && unchanged('siteId')
                     );
 
-      allow delete: if isAdmin() && resource.data.status == 'available';
+      allow delete: if activeAdmin() && resource.data.status == 'available';
     }
 
     // ---------- customer credit accounts ----------
     match /accounts/{accountId} {
       allow read:   if atMySite(resource.data.siteId);
-      allow create: if atMySite(request.resource.data.siteId)
+      allow create: if activeStaff() && atMySite(request.resource.data.siteId)
                     && request.resource.data.name is string
                     && request.resource.data.name.size() > 0;
-      allow update: if atMySite(resource.data.siteId) && unchanged('siteId');
-      allow delete: if isAdmin();
+      allow update: if activeStaff() && atMySite(resource.data.siteId) && unchanged('siteId');
+      allow delete: if activeAdmin();
     }
 
     // ---------- sales: an append-only ledger ----------
     match /sales/{saleId} {
       allow read: if atMySite(resource.data.siteId);
 
-      allow create: if atMySite(request.resource.data.siteId)
+      allow create: if activeStaff() && atMySite(request.resource.data.siteId)
                     // a sale is always booked to the staff member making it
                     && request.resource.data.agentId == uid()
                     && request.resource.data.type in ['V5', 'V10', 'REC']
@@ -120,7 +144,7 @@ service cloud.firestore {
                         && atMySite(get(/databases/$(database)/documents/accounts/$(resource.data.accountId)).data.siteId))
                   );
 
-      allow create: if isStaff()
+      allow create: if activeStaff()
                     && request.resource.data.receivedBy == uid()
                     && request.resource.data.amount is number
                     && request.resource.data.amount > 0
@@ -132,7 +156,7 @@ service cloud.firestore {
 
       // Immutable, with one exception: an admin may stamp the site onto an
       // older record that predates the field. Nothing else may change.
-      allow update: if isAdmin()
+      allow update: if activeAdmin()
                     && !('siteId' in resource.data)
                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['siteId'])
                     && request.resource.data.siteId ==
@@ -149,7 +173,7 @@ service cloud.firestore {
       allow read: if isStaff() && atMySite(resource.data.siteId);
 
       // Administrators only: reversing moves money and returns stock.
-      allow create: if isAdmin()
+      allow create: if activeAdmin()
                     && request.resource.data.reversedBy == uid()
                     && request.resource.data.saleId is string
                     && request.resource.data.saleId.size() > 0
@@ -164,9 +188,9 @@ service cloud.firestore {
     match /closings/{closingId} {
       allow read:   if isAdmin() || (isStaff() && resource.data.userId == uid());
       // An agent closes their own month; nobody rewrites a closed period.
-      allow create: if isStaff() && request.resource.data.userId == uid();
+      allow create: if activeStaff() && request.resource.data.userId == uid();
       allow update: if false;
-      allow delete: if isAdmin();
+      allow delete: if activeAdmin();
     }
 
     // Anything not matched above is denied.

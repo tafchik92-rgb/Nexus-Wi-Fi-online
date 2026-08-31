@@ -38,6 +38,14 @@ const agentA = env.authenticatedContext("agentA", { role: "agent", siteIds: [SIT
 const agentB = env.authenticatedContext("agentB", { role: "agent", siteIds: [SITE_B] }).firestore();
 const anon = env.unauthenticatedContext().firestore();
 
+// Suspended staff still holding the token they were issued while active —
+// role and site scope intact, because that is exactly the situation: the
+// token is good for up to an hour after an administrator suspends them.
+const agentS = env.authenticatedContext("agentS", { role: "agent", siteIds: [SITE_A] }).firestore();
+const adminS = env.authenticatedContext("adminS", { role: "admin", siteIds: [] }).firestore();
+// A member whose record was deleted outright, token still in hand.
+const ghost = env.authenticatedContext("ghost", { role: "agent", siteIds: [SITE_A] }).firestore();
+
 // seed with rules disabled
 await env.withSecurityRulesDisabled(async (ctx) => {
   const d = ctx.firestore();
@@ -45,7 +53,14 @@ await env.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(d, "sites", SITE_B), { name: "Kiosk", code: "S-02", status: "active" });
   await setDoc(doc(d, "staff", "agentA"), { name: "A", code: "AG-01", role: "agent", siteIds: [SITE_A], status: "active" });
   await setDoc(doc(d, "staff", "admin1"), { name: "Boss", code: "ADM-01", role: "admin", siteIds: [], status: "active" });
+  // agentB's record matters even though every agentB case expects a denial.
+  // Without it those writes would be refused for having no staff record at
+  // all, and the site scoping they exist to prove would go untested.
+  await setDoc(doc(d, "staff", "agentB"), { name: "B", code: "AG-02", role: "agent", siteIds: [SITE_B], status: "active" });
+  await setDoc(doc(d, "staff", "agentS"), { name: "S", code: "AG-09", role: "agent", siteIds: [SITE_A], status: "inactive" });
+  await setDoc(doc(d, "staff", "adminS"), { name: "ExBoss", code: "ADM-09", role: "admin", siteIds: [], status: "inactive" });
   await setDoc(doc(d, "staffAuth", "agentA"), { hash: "secret", salt: "s" });
+  await setDoc(doc(d, "vouchers", "vS-1"), { code: "W5-S", type: "V5", siteId: SITE_A, status: "available", uploadedAt: "2026-08-01T00:00:03Z" });
   await setDoc(doc(d, "vouchers", "vA-1"), { code: "W5-A", type: "V5", siteId: SITE_A, status: "available", uploadedAt: "2026-08-01T00:00:00Z" });
   await setDoc(doc(d, "vouchers", "vA-2"), { code: "W5-B", type: "V5", siteId: SITE_A, status: "available", uploadedAt: "2026-08-01T00:00:01Z" });
   await setDoc(doc(d, "vouchers", "vA-3"), { code: "W5-D", type: "V5", siteId: SITE_A, status: "available", uploadedAt: "2026-08-01T00:00:02Z" });
@@ -313,6 +328,56 @@ await check("only admins change the site network", async () => {
   await assertFails(setDoc(doc(agentA, "sites", "rogue"), { name: "Rogue", code: "S-99", status: "active" }));
   await assertFails(updateDoc(doc(agentA, "sites", SITE_A), { name: "Renamed" }));
   await assertSucceeds(updateDoc(doc(admin, "sites", SITE_A), { name: "Camp Renamed" }));
+});
+
+/* ---------------- suspension takes effect immediately ----------------
+   The token is good for up to an hour after an administrator suspends
+   someone. It used to be all these rules read, so a suspended agent went
+   on selling until they happened to sign out. Every one of these is done
+   with a perfectly valid token. */
+await check("a suspended agent cannot issue a voucher", async () => {
+  await assertFails(updateDoc(doc(agentS, "vouchers", "vS-1"), { status: "sold" }));
+});
+await check("a suspended agent cannot book a sale", async () => {
+  await assertFails(setDoc(doc(agentS, "sales", "sSusp"), {
+    customer: "C", type: "V5", price: 5, pay: "cash",
+    agentId: "agentS", siteId: SITE_A, soldAt: "2026-08-09T00:00:00Z" }));
+});
+await check("a suspended agent cannot take a customer's money", async () => {
+  await assertFails(setDoc(doc(agentS, "payments", "pSusp"), {
+    accountId: "accA", siteId: SITE_A, amount: 10, method: "cash",
+    receivedBy: "agentS", receivedAt: "2026-08-09T00:00:00Z", allocations: [] }));
+});
+await check("a suspended agent cannot open an account or close a month", async () => {
+  await assertFails(setDoc(doc(agentS, "accounts", "accSusp"), { name: "New", phone: "", siteId: SITE_A }));
+  await assertFails(setDoc(doc(agentS, "closings", "clSusp"), {
+    userId: "agentS", siteId: SITE_A, period: "2026-08", totals: {} }));
+});
+await check("a suspended administrator cannot manage stock, staff or reversals", async () => {
+  await assertFails(setDoc(doc(adminS, "vouchers", "vNew"), {
+    code: "W5-N", type: "V5", siteId: SITE_A, status: "available", uploadedAt: "2026-08-09T00:00:00Z" }));
+  await assertFails(updateDoc(doc(adminS, "staff", "agentA"), { status: "inactive", role: "agent" }));
+  await assertFails(setDoc(doc(adminS, "reversals", "revSusp"), {
+    saleId: "saleA", siteId: SITE_A, outcome: "restocked",
+    reversedBy: "adminS", reversedAt: "2026-08-09T00:00:00Z" }));
+  await assertFails(deleteDoc(doc(adminS, "vouchers", "vA-3")));
+});
+await check("someone deleted from the team cannot write at all", async () => {
+  await assertFails(setDoc(doc(ghost, "sales", "sGhost"), {
+    customer: "C", type: "V5", price: 5, pay: "cash",
+    agentId: "ghost", siteId: SITE_A, soldAt: "2026-08-09T00:00:00Z" }));
+  await assertFails(updateDoc(doc(ghost, "vouchers", "vS-1"), { status: "sold" }));
+});
+await check("a suspended till can still read — that is how it learns it is suspended", async () => {
+  await assertSucceeds(getDoc(doc(agentS, "staff", "agentS")));
+  await assertSucceeds(getDocs(collection(agentS, "staff")));
+});
+await check("reactivating restores selling, with no new sign-in", async () => {
+  await env.withSecurityRulesDisabled(async (c) =>
+    updateDoc(doc(c.firestore(), "staff", "agentS"), { status: "active" }));
+  await assertSucceeds(updateDoc(doc(agentS, "vouchers", "vS-1"), { status: "sold" }));
+  await env.withSecurityRulesDisabled(async (c) =>
+    updateDoc(doc(c.firestore(), "staff", "agentS"), { status: "inactive" }));
 });
 
 /* ---------------- unknown collections ---------------- */

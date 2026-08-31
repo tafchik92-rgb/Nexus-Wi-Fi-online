@@ -26,6 +26,16 @@ Function against a salted scrypt hash no client can read, and the token it mints
 carries role and site claims that the Firestore security rules read directly.
 Editing anything in devtools widens nothing. See **[BACKEND.md](BACKEND.md)**.
 
+**Suspending someone takes effect immediately**, including on a till that is
+already open. That token stays valid for up to an hour, and it used to be all
+the rules read — so a suspended agent kept issuing vouchers and taking money
+until they happened to sign out. Every write now checks the staff directory
+itself, so the refusal is instant whatever the token says, and the suspended
+device closes its own session and says why rather than failing silently at
+COMPLETE SALE. Someone deleted from the team is stopped the same way.
+`tests/suspend.test.mjs` and the suspension cases in `tests/rules.test.mjs`
+hold both halves.
+
 ### Multi-location management
 Open any number of **sites**; vouchers, sales, staff assignments and credit
 accounts are all scoped per site. Sites can be **renamed** at any time — records

@@ -108,7 +108,7 @@ async function runSetup() {
   try {
     if (!Backend.ready) await Backend.connect();
     const staff = await Backend.bootstrap({ name, code, pin, siteName });
-    await Backend.startSync(() => renderAll());
+    await Backend.startSync(onSync);
     session = { userId: staff.id, siteId: "" };
     saveSession();
     ui.showSetup = false;
@@ -132,7 +132,7 @@ async function attemptLogin(code, pin) {
   try {
     if (!Backend.ready) await Backend.connect();
     const staff = await Backend.signIn(String(code).trim(), String(pin).trim());
-    await Backend.startSync(() => renderAll());
+    await Backend.startSync(onSync);
     session = {
       userId: staff.id,
       siteId: staff.role === "admin" ? savedScope() : (staff.siteIds || [])[0] || "",
@@ -231,6 +231,42 @@ async function runDiagnostics() {
     list.innerHTML = `<li class="diag-row diag-fail"><span class="diag-icon">✗</span><span class="diag-body"><b>Diagnostics failed</b><span class="diag-detail">${esc(String(e && e.message || e))}</span></span></li>`;
   }
 }
+
+/* ------------------------------------------------------------
+   Suspension ends the shift that is already open
+   ------------------------------------------------------------ */
+// The rules now refuse a suspended member's writes, which is the boundary
+// that matters. This is the other half of it. A till whose writes are about
+// to be refused should say so and close, not go on taking orders and fail at
+// the last step — an agent watching COMPLETE SALE bounce with no explanation
+// will assume the app is broken and keep trying.
+//
+// Every snapshot passes through here, and the staff directory is one of the
+// collections an agent listens to, so the update that suspends them is itself
+// what ends the session. Their own record disappearing counts too: removed
+// from the team is not a lesser case than suspended.
+let sessionEnding = false;
+function guardSession() {
+  if (!session || sessionEnding) return false;
+  const me = userById(session.userId);
+  if (me && me.status === "active") return false;
+
+  sessionEnding = true;
+  const why = me
+    ? "Your account has been suspended. Ask an administrator."
+    : "Your account has been removed from this shop.";
+  // showLogin() clears the error line, so the reason goes up after it runs.
+  logout().finally(() => {
+    sessionEnding = false;
+    const err = $("#login-err");
+    if (err) { err.textContent = why; err.hidden = false; }
+    toast(why, "err");
+  });
+  return true;
+}
+
+// What every sync callback does: end the shift if it is over, otherwise draw.
+const onSync = () => { if (!guardSession()) renderAll(); };
 
 async function logout() {
   db = emptyDb();                 // don't leave one shift's records on screen
@@ -959,7 +995,7 @@ async function connectAndRestore() {
     if (!uid) { showLogin(); return; }
 
     bootSays("Signing you back in…");
-    await Backend.startSync(() => renderAll());
+    await Backend.startSync(onSync);
     const me = userById(uid);
     if (!me || me.status !== "active") {
       // Removed or suspended while signed in — or the listeners were refused.

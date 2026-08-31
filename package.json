@@ -18,7 +18,8 @@
     "test:staleworker": "node tests/staleworker.test.mjs",
     "test:contention": "node tests/contention.test.mjs",
     "test:carryover": "node tests/carryover.test.mjs",
-    "test:version": "node tests/version.test.mjs"
+    "test:version": "node tests/version.test.mjs",
+    "test:suspend": "node tests/suspend.test.mjs"
   },
   "dependencies": {},
   "devDependencies": {
