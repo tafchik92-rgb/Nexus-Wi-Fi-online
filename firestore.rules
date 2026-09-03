@@ -193,6 +193,46 @@ service cloud.firestore {
       allow delete: if activeAdmin();
     }
 
+    // ---------- cash hand-overs: the reconciliation ledger ----------
+    // An agent collects money all month and at some point hands it in. This
+    // records that, tagged with the month whose takings it covers — money
+    // handed over in March is very often February's, and a ledger that
+    // cannot say so makes both months look wrong.
+    //
+    // Append-only, like the rest of the record. An agent may only ever
+    // record their own hand-over; an administrator may record having
+    // received anyone's. A mistake is voided by an administrator, never
+    // edited, and the voided row stays visible.
+    match /cashouts/{cashoutId} {
+      allow read: if isStaff() && (isAdmin() || atMySite(resource.data.siteId));
+
+      allow create: if activeStaff()
+                    && request.resource.data.recordedBy == uid()
+                    // an agent accounts for their own takings and no one else's
+                    && (isAdmin() || request.resource.data.userId == uid())
+                    && atMySite(request.resource.data.siteId)
+                    && request.resource.data.amount is number
+                    && request.resource.data.amount > 0
+                    && request.resource.data.method in ['cash', 'mobile', 'bank']
+                    && request.resource.data.period is string
+                    && request.resource.data.period.matches('^[0-9]{4}-[0-9]{2}$')
+                    // a hand-over cannot arrive pre-cancelled
+                    && !('voidedAt' in request.resource.data);
+
+      // The single permitted update: an administrator voiding a mistaken
+      // entry, once, with a reason. Nothing else about it may change — the
+      // amount and the month it covers are the whole point of the record.
+      allow update: if activeAdmin()
+                    && !('voidedAt' in resource.data)
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['voidedAt', 'voidedBy', 'voidedByName', 'voidReason'])
+                    && request.resource.data.voidedBy == uid()
+                    && request.resource.data.voidReason is string
+                    && request.resource.data.voidReason.size() > 0;
+
+      allow delete: if false;
+    }
+
     // Anything not matched above is denied.
     match /{document=**} {
       allow read, write: if false;

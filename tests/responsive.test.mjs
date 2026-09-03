@@ -139,7 +139,12 @@ const PROBE = `(() => {
 })()`;
 
 const findings = [];
+// Which screens were actually reached. A click that silently fails takes a
+// screen out of the audit, and "0 findings" then means "nothing was looked
+// at" — indistinguishable from a clean bill of health unless it is counted.
+const seen = new Set();
 const record = (where, vp, res) => {
+  seen.add(where);
   const add = (kind, items) => { for (const i of new Set(items)) findings.push({ where, vp: vp.name, w: vp.width, kind, detail: i }); };
   if (res.pageOverflow > 1) findings.push({ where, vp: vp.name, w: vp.width, kind: 'page-overflow', detail: res.pageOverflow + 'px' });
   add('wider-than-screen', res.wide);
@@ -194,7 +199,7 @@ for (const vp of VIEWPORTS) {
   // ---- admin ----
   await p.fill('#lg-code','ADM-01'); await p.fill('#lg-pin','1234');
   await p.click('#login-form button[type=submit]'); await p.waitForTimeout(5500);
-  for (const sub of ['dash','team','vouchers','sites','credit','reports','cloud']) {
+  for (const sub of ['dash','team','vouchers','sites','credit','reports','cash','cloud']) {
     await p.click(`.subtab[data-sub=${sub}]`).catch(() => {});
     await p.waitForTimeout(700);
     record('admin/' + sub, vp, await p.evaluate(PROBE));
@@ -220,6 +225,14 @@ for (const vp of VIEWPORTS) {
   record('modal/pin', vp, await p.evaluate(PROBE));
   await p.click('#pin-cancel'); await p.waitForTimeout(300);
 
+  await p.click('.subtab[data-sub=cash]'); await p.waitForTimeout(900);
+  const voidBtn = p.locator('[data-action=void-cashout]').first();
+  if (await voidBtn.count()) {
+    await voidBtn.click(); await p.waitForTimeout(600);
+    record('modal/void-cashout', vp, await p.evaluate(PROBE));
+    await p.click('#voidcash-cancel').catch(() => {}); await p.waitForTimeout(300);
+  }
+
   // ---- agent ----
   await p.click('#btn-logout'); await p.waitForTimeout(2500);
   await p.fill('#lg-code','AG-01'); await p.fill('#lg-pin','1111');
@@ -229,12 +242,19 @@ for (const vp of VIEWPORTS) {
     await p.waitForTimeout(800);
     record('agent/' + tab, vp, await p.evaluate(PROBE));
   }
+  const cashBtn = p.locator('#btn-cashout');
+  if (await cashBtn.count() && await cashBtn.isEnabled()) {
+    await cashBtn.click(); await p.waitForTimeout(700);
+    record('modal/cashout', vp, await p.evaluate(PROBE));
+    await p.click('#cashout-cancel').catch(() => {}); await p.waitForTimeout(300);
+  }
   await ctx.close();
   process.stdout.write(`  ${vp.name} (${vp.width}px) done\n`);
 }
 await b.close();
 
 // ---------- report ----------
+console.log(`\ncovered ${seen.size} screens: ${[...seen].sort().join(', ')}`);
 console.log('\n================ FINDINGS ================');
 const byKind = {};
 for (const f of findings) (byKind[f.kind] ||= []).push(f);

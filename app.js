@@ -14,6 +14,10 @@ const ui = {
   settleAccount: null,
   reverseSale: null,
   reverseOutcome: "restocked",
+  // Set when an administrator is receiving cash on an agent's behalf, so the
+  // agent's own cash-out modal can serve both without a second copy of it.
+  cashoutFor: null,
+  voidCashout: null,
 };
 
 /* ------------------------------------------------------------
@@ -403,12 +407,14 @@ function renderAll() {
     renderVouchers();
     renderAdminCredit();
     renderAdminReports();
+    renderCashLedger();
     renderCloud();
     renderTerminal();
   } else {
     renderTerminal();
     renderAgentCredit();
     renderMonthEnd();
+    renderCashout();
   }
 }
 
@@ -602,9 +608,24 @@ function wire() {
   // reports
   $("#rep-period").addEventListener("change", renderAdminReports);
   $("#btn-rep-export").addEventListener("click", exportReportCSV);
-  $("#me-period").addEventListener("change", renderMonthEnd);
+  $("#me-period").addEventListener("change", () => { renderMonthEnd(); renderCashout(); });
   $("#btn-close-month").addEventListener("click", closeMonth);
   $("#btn-me-export").addEventListener("click", exportMonthCSV);
+
+  // cash hand-over
+  $("#btn-cashout").addEventListener("click", openCashout);
+  $("#cashout-period").addEventListener("change", syncCashoutOwed);
+  $("#cashout-all").addEventListener("click", () => {
+    $("#cashout-amount").value = $("#cashout-owed").dataset.owed || "";
+  });
+  $("#cashout-cancel").addEventListener("click", () => { $("#modal-cashout").hidden = true; });
+  $("#cashout-confirm").addEventListener("click", submitCashout);
+  $("#voidcash-cancel").addEventListener("click", () => { $("#modal-voidcash").hidden = true; });
+  $("#voidcash-confirm").addEventListener("click", submitVoidCashout);
+  $("#cash-period").addEventListener("change", renderCashLedger);
+  $("#cash-agent").addEventListener("change", renderCashLedger);
+  $("#btn-cash-export").addEventListener("click", exportCashLedgerCSV);
+  $("#btn-cash-receive").addEventListener("click", openAdminCashout);
 
   // terminal
   $("#pkg-cards").addEventListener("click", (e) => {
@@ -673,6 +694,7 @@ function wire() {
 
     if (action === "settle") return openSettle(id);
     if (action === "reverse-sale") return openReversal(id);
+    if (action === "void-cashout") return openVoidCashout(id);
     if (action === "view-account") return openStatement(id);
 
     if (action === "toggle-user") {

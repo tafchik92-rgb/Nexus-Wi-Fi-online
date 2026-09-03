@@ -101,6 +101,32 @@ and nothing needs reopening or adjusting. The admin report labels the live
 figure **UNPAID TODAY** and the frozen one **UNPAID AT CLOSE** so the two are
 not mistaken for each other.
 
+### Cash hand-over — the reconciliation ledger
+The month-end statement says what an agent *collected*. It never said how much
+of it had actually been handed in, so the shop could read a clean set of
+reports and still not know whether an agent was sitting on $20 or $2,000.
+
+An agent hands cash in from **MONTH-END → CASH OUT**, and the entry is **tagged
+with the month whose takings it covers**. That tag is the point: money handed
+over in March is very often February's, and a ledger that cannot say which
+makes both months look wrong. The panel shows what the month collected, what
+has been handed in, and what is still in their hands — plus a **BROUGHT
+FORWARD** table of earlier months still owing, which they can pay off from any
+later month. Handing in more than a month is short is refused; a negative
+balance is a counting error nothing can explain.
+
+**Closing a month does not collect the money.** Closing freezes the takings —
+a month closed owing cash keeps owing it, and keeps saying so, until it is
+handed over.
+
+Admins get **ADMIN → CASH-OUTS**: the position per agent per month (collected,
+handed over, still held) and the full audit trail underneath — every entry,
+its reference, and whether the agent declared it or an administrator recorded
+receiving it. Entries are append-only. A mistake is **voided** with a reason,
+never edited: the row stays on the ledger struck through, and the balance it
+was covering goes back to owing. Admins can also record cash they took
+directly, booked against the agent it came from.
+
 ### Voucher stock
 Bulk upload by pasting codes, auto-generating unique ones, or **importing
 hotspot exports** (`.xlsx` / `.csv` — e.g. TP-Link Omada `VoucherList` files:
@@ -190,6 +216,11 @@ sale    { id, customer, phone, accountId, voucherId, voucherCode, type, price,
 payment { id, accountId, siteId, amount, method, note, receivedBy, receivedAt,
           allocations: [{ saleId, amount }] }
 closing { id, userId, siteId, period: "YYYY-MM", generatedAt, totals }
+reversal{ id /* = the sale's id */, saleId, siteId, outcome, reason, reversedBy, reversedAt }
+cashout { id, userId, userName, siteId, period: "YYYY-MM" /* the month it covers */,
+          amount, method, reference, handedOverAt,
+          recordedBy, recordedByName, recordedByRole: "agent"|"admin",
+          voidedBy?, voidedByName?, voidedAt?, voidReason? }
 ```
 
 PIN material lives in a separate `staffAuth` collection that **no client can

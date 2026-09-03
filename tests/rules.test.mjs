@@ -380,6 +380,79 @@ await check("reactivating restores selling, with no new sign-in", async () => {
     updateDoc(doc(c.firestore(), "staff", "agentS"), { status: "inactive" }));
 });
 
+/* ---------------- cash hand-overs ----------------
+   The reconciliation ledger — the record of money physically changing
+   hands. Who may write what matters more here than anywhere else: an
+   agent accounting for someone else's takings, or quietly editing their
+   own figure afterwards, is the whole risk this ledger exists to close. */
+const handover = (over = {}) => Object.assign({
+  userId: "agentA", userName: "A", siteId: SITE_A, period: "2026-08",
+  amount: 120, method: "cash", reference: "",
+  handedOverAt: "2026-08-31T17:00:00Z",
+  recordedBy: "agentA", recordedByName: "A", recordedByRole: "agent",
+}, over);
+
+await check("an agent records their own hand-over, tagged to a month", async () => {
+  await assertSucceeds(setDoc(doc(agentA, "cashouts", "co1"), handover()));
+});
+await check("an agent cannot account for another agent's takings", async () => {
+  await assertFails(setDoc(doc(agentA, "cashouts", "coFake"), handover({ userId: "agentB" })));
+});
+await check("an agent cannot book a hand-over in someone else's name", async () => {
+  await assertFails(setDoc(doc(agentA, "cashouts", "coFake2"),
+    handover({ recordedBy: "admin1", recordedByRole: "admin" })));
+});
+await check("an administrator can record having received an agent's cash", async () => {
+  await assertSucceeds(setDoc(doc(admin, "cashouts", "co2"),
+    handover({ amount: 40, recordedBy: "admin1", recordedByName: "Boss", recordedByRole: "admin" })));
+});
+await check("a hand-over needs a real month and a positive amount", async () => {
+  await assertFails(setDoc(doc(agentA, "cashouts", "coBad1"), handover({ period: "August" })));
+  await assertFails(setDoc(doc(agentA, "cashouts", "coBad2"), handover({ period: "2026-8" })));
+  await assertFails(setDoc(doc(agentA, "cashouts", "coBad3"), handover({ amount: 0 })));
+  await assertFails(setDoc(doc(agentA, "cashouts", "coBad4"), handover({ amount: -50 })));
+  await assertFails(setDoc(doc(agentA, "cashouts", "coBad5"), handover({ amount: "120" })));
+  await assertFails(setDoc(doc(agentA, "cashouts", "coBad6"), handover({ method: "iou" })));
+});
+await check("a hand-over cannot be filed at a site the agent does not work", async () => {
+  await assertFails(setDoc(doc(agentA, "cashouts", "coBad7"), handover({ siteId: SITE_B })));
+});
+await check("a hand-over cannot arrive already cancelled", async () => {
+  await assertFails(setDoc(doc(agentA, "cashouts", "coBad8"),
+    handover({ voidedAt: "2026-08-31T17:05:00Z", voidedBy: "agentA", voidReason: "oops" })));
+});
+await check("nobody edits the amount, or the month it covers", async () => {
+  await assertFails(updateDoc(doc(agentA, "cashouts", "co1"), { amount: 500 }));
+  await assertFails(updateDoc(doc(agentA, "cashouts", "co1"), { period: "2026-07" }));
+  await assertFails(updateDoc(doc(admin, "cashouts", "co1"), { amount: 500 }));
+  await assertFails(updateDoc(doc(admin, "cashouts", "co1"), { period: "2026-07" }));
+});
+await check("an agent cannot void a hand-over, and nobody deletes one", async () => {
+  await assertFails(updateDoc(doc(agentA, "cashouts", "co1"), {
+    voidedAt: "2026-09-01T09:00:00Z", voidedBy: "agentA", voidedByName: "A", voidReason: "typo" }));
+  await assertFails(deleteDoc(doc(agentA, "cashouts", "co1")));
+  await assertFails(deleteDoc(doc(admin, "cashouts", "co1")));
+});
+await check("an administrator voids a mistaken one, and has to say why", async () => {
+  await assertFails(updateDoc(doc(admin, "cashouts", "co1"), {
+    voidedAt: "2026-09-01T09:00:00Z", voidedBy: "admin1", voidedByName: "Boss", voidReason: "" }));
+  await assertSucceeds(updateDoc(doc(admin, "cashouts", "co1"), {
+    voidedAt: "2026-09-01T09:00:00Z", voidedBy: "admin1", voidedByName: "Boss", voidReason: "counted twice" }));
+});
+await check("a voided hand-over is finished — it cannot be voided again", async () => {
+  await assertFails(updateDoc(doc(admin, "cashouts", "co1"), {
+    voidedAt: "2026-09-02T09:00:00Z", voidedBy: "admin1", voidedByName: "Boss", voidReason: "again" }));
+});
+await check("a suspended agent cannot hand cash in", async () => {
+  await assertFails(setDoc(doc(agentS, "cashouts", "coSusp"),
+    handover({ userId: "agentS", recordedBy: "agentS" })));
+});
+await check("agents read hand-overs at their own site, not elsewhere", async () => {
+  await assertSucceeds(getDocs(query(collection(agentA, "cashouts"), where("siteId", "==", SITE_A))));
+  await assertFails(getDocs(query(collection(agentB, "cashouts"), where("siteId", "==", SITE_A))));
+  await assertSucceeds(getDocs(collection(admin, "cashouts")));
+});
+
 /* ---------------- unknown collections ---------------- */
 await check("undeclared collections are denied by default", async () => {
   await assertFails(setDoc(doc(admin, "anythingElse", "x"), { a: 1 }));

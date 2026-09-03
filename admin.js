@@ -820,6 +820,244 @@ function exportReportCSV() {
 }
 
 /* ------------------------------------------------------------
+   Cash-outs — the reconciliation ledger
+
+   The month-end report says what each agent collected. It never said
+   what they had actually handed in, so a shop could read a clean set of
+   reports and still not know who was sitting on the takings.
+
+   Two views, because they answer different questions. The position table
+   asks "who owes us money right now", across every month, including ones
+   already closed — closing a month freezes what was collected, it does
+   not mean the cash arrived. The ledger underneath is the audit trail:
+   every hand-over, who recorded it, and any that were voided.
+   ------------------------------------------------------------ */
+
+// Anyone who has traded, closed a month, or handed cash over.
+const cashAgents = () => db.users.filter((u) =>
+  u.role === "agent"
+  || db.sales.some((s) => s.agentId === u.id)
+  || db.cashouts.some((c) => c.userId === u.id));
+
+// Every agent-month with anything to say: money collected, handed over,
+// or a month closed. Newest month first — that is how it gets read.
+function cashPositions(siteId, onlyUser, onlyPeriod) {
+  const rows = [];
+  for (const u of cashAgents()) {
+    if (onlyUser && u.id !== onlyUser) continue;
+    for (const period of cashPeriods(u.id, siteId)) {
+      if (onlyPeriod && period !== onlyPeriod) continue;
+      const sites = siteId ? [siteId] : sitesTouched(u.id, period);
+      for (const s of sites) {
+        const pos = cashPosition(u.id, period, s);
+        if (pos.due === 0 && pos.handedOver === 0) continue;
+        rows.push(Object.assign({ user: u, siteId: s }, pos));
+      }
+    }
+  }
+  return rows.sort((a, b) =>
+    b.period.localeCompare(a.period) || a.user.name.localeCompare(b.user.name));
+}
+
+// Which sites an agent's money for a period sits under. Cash is accounted
+// for per site, so an agent working two shops owes each of them separately.
+const sitesTouched = (userId, period) => {
+  const set = new Set(sitesWorked(userId, period));
+  for (const c of db.cashouts) {
+    if (c.userId === userId && c.period === period && !c.voidedAt) set.add(c.siteId || "");
+  }
+  for (const c of db.closings) {
+    if (c.userId === userId && c.period === period) set.add(c.siteId || "");
+  }
+  return set.size ? [...set] : [""];
+};
+
+function renderCashLedger() {
+  const site = currentSiteId();
+  const period = $("#cash-period").value || "";
+  const who = $("#cash-agent").value || "";
+
+  // Keep the agent picker in step without losing the current choice.
+  const agents = cashAgents();
+  const sel = $("#cash-agent");
+  const keep = sel.value;
+  sel.innerHTML = `<option value="">ALL AGENTS</option>` +
+    agents.map((u) => `<option value="${u.id}">${esc(u.name)} · ${esc(u.code)}</option>`).join("");
+  sel.value = agents.some((u) => u.id === keep) ? keep : "";
+
+  const rows = cashPositions(site, who, period);
+  const held = rows.reduce((s, r) => s + Math.max(0, r.outstanding), 0);
+  const over = rows.reduce((s, r) => s + r.handedOver, 0);
+  const owing = rows.filter((r) => r.outstanding > 0);
+
+  $("#cash-tiles").innerHTML = `
+    <div class="tile ${held > 0 ? "tile-warn" : ""}">
+      <p class="tile-label">STILL WITH AGENTS</p>
+      <p class="tile-value">${money(held)}</p>
+      <p class="tile-sub">${owing.length} AGENT-MONTH${owing.length === 1 ? "" : "S"} OUTSTANDING</p>
+    </div>
+    <div class="tile">
+      <p class="tile-label">HANDED OVER</p>
+      <p class="tile-value">${money(over)}</p>
+      <p class="tile-sub">ACROSS ${rows.length} AGENT-MONTH${rows.length === 1 ? "" : "S"}</p>
+    </div>
+    <div class="tile">
+      <p class="tile-label">COLLECTED</p>
+      <p class="tile-value">${money(rows.reduce((s, r) => s + r.due, 0))}</p>
+      <p class="tile-sub">CASH SALES · DEBT SETTLEMENTS</p>
+    </div>`;
+
+  $("#cash-note").textContent = period
+    ? `Showing ${fmtMonth(period)} only. Clear the month to see every period, including closed ones that still owe.`
+    : "Every month with money in it, newest first. A closed month keeps owing until the cash is handed in — closing freezes the takings, it does not collect them.";
+
+  $("#cash-position-tbody").innerHTML = rows.length === 0
+    ? `<tr><td colspan="7" class="empty">Nothing collected yet.</td></tr>`
+    : rows.map((r) => `
+      <tr>
+        <td>${esc(r.user.name)}<span class="cell-sub">${esc(r.user.code)}</span></td>
+        <td>${esc(siteName(r.siteId) || "—")}</td>
+        <td>${esc(fmtMonth(r.period))}</td>
+        <td class="num">${money(r.due)}</td>
+        <td class="num">${money(r.handedOver)}</td>
+        <td class="num ${r.outstanding > 0 ? "owed-strong" : ""}">${money(r.outstanding)}</td>
+        <td>${r.closed ? `<span class="chip chip-ok"><i></i>CLOSED</span>` : `<span class="chip chip-off"><i></i>OPEN</span>`}</td>
+      </tr>`).join("");
+
+  const ledger = db.cashouts
+    .filter((c) => (!site || (c.siteId || "") === site)
+                && (!who || c.userId === who)
+                && (!period || c.period === period))
+    .slice().sort((a, b) => (a.handedOverAt < b.handedOverAt ? 1 : -1));
+
+  const voidedCount = ledger.filter((c) => c.voidedAt).length;
+  $("#cash-ledger-count").innerHTML = `<span class="chip chip-v10"><i></i>${ledger.length} ENTR${ledger.length === 1 ? "Y" : "IES"}</span>` +
+    (voidedCount ? ` <span class="chip chip-sold"><i></i>${voidedCount} VOIDED</span>` : "");
+
+  $("#cash-ledger-tbody").innerHTML = ledger.length === 0
+    ? `<tr><td colspan="9" class="empty">No hand-overs recorded.</td></tr>`
+    : ledger.map((c) => `
+      <tr class="${c.voidedAt ? "row-reversed" : ""}">
+        <td class="cell-date">${fmtDateTime(c.handedOverAt)}</td>
+        <td>${esc(c.userName)}</td>
+        <td>${esc(siteName(c.siteId) || "—")}</td>
+        <td>${esc(fmtMonth(c.period))}</td>
+        <td class="num">${money(c.amount)}</td>
+        <td>${esc(PAY_METHODS[c.method] || c.method)}</td>
+        <td>${esc(c.reference || "—")}</td>
+        <td>${esc(c.recordedByName)}<span class="cell-sub">${c.recordedByRole === "admin" ? "received by an administrator" : "declared by the agent"}</span>
+          ${c.voidedAt ? `<span class="rev-note">VOIDED by ${esc(c.voidedByName || "—")} — ${esc(c.voidReason || "")}</span>` : ""}</td>
+        <td class="row-actions">${c.voidedAt ? "" :
+          `<button class="row-act danger" data-action="void-cashout" data-id="${c.id}">VOID</button>`}</td>
+      </tr>`).join("");
+}
+
+// An administrator receiving cash directly, booked against the agent it
+// came from. Recorded as "received by an administrator" rather than an
+// agent's own declaration, because the two are not the same claim.
+function openAdminCashout() {
+  const agents = cashAgents().filter((u) => u.status === "active");
+  if (!agents.length) return toast("No agents to receive cash from", "err");
+
+  const who = $("#cash-agent").value || agents[0].id;
+  const user = userById(who) || agents[0];
+  const site = currentSiteId();
+  const open = openCashPeriods(user.id, site);
+  if (!open.length) return toast(`${user.name} has nothing outstanding${site ? ` at ${siteName(site)}` : ""}`);
+
+  ui.cashoutFor = { userId: user.id, siteId: open[0].siteId || site };
+  $("#cashout-who").textContent = user.name;
+  $("#cashout-meta").textContent = ` · ${user.code} · receiving on their behalf`;
+  $("#cashout-period").innerHTML = open.map((p) =>
+    `<option value="${p.period}">${esc(fmtMonth(p.period))} — ${money(p.outstanding)} owing</option>`).join("");
+  $("#cashout-period").value = open[0].period;
+  $("#cashout-amount").value = "";
+  $("#cashout-ref").value = "";
+  $("#cashout-method").value = "cash";
+  $("#cashout-err").hidden = true;
+  syncCashoutOwed();
+  $("#modal-cashout").hidden = false;
+  setTimeout(() => $("#cashout-amount").focus(), 40);
+}
+
+function openVoidCashout(id) {
+  const c = db.cashouts.find((x) => x.id === id);
+  if (!c) return;
+  if (c.voidedAt) return toast("That hand-over is already voided", "err");
+  ui.voidCashout = id;
+  $("#voidcash-what").textContent =
+    `${money(c.amount)} from ${c.userName}, covering ${fmtMonth(c.period)}, recorded ${fmtDateTime(c.handedOverAt)}.`;
+  $("#voidcash-reason").value = "";
+  $("#voidcash-err").hidden = true;
+  $("#modal-voidcash").hidden = false;
+  setTimeout(() => $("#voidcash-reason").focus(), 40);
+}
+
+async function submitVoidCashout() {
+  const c = db.cashouts.find((x) => x.id === ui.voidCashout);
+  const reason = $("#voidcash-reason").value.trim();
+  const fail = (msg) => {
+    const err = $("#voidcash-err");
+    err.textContent = msg; err.hidden = false;
+  };
+  if (!c) return fail("That hand-over is no longer there.");
+  if (!isAdmin()) return fail("Administrators only.");
+  if (!reason) return fail("Say why — it goes on the record.");
+
+  const me = currentUser();
+  const btn = $("#voidcash-confirm");
+  btn.disabled = true;
+  try {
+    // Only the void fields change; the rules refuse anything else, and the
+    // amount and month are the whole point of the entry.
+    Object.assign(c, {
+      voidedAt: new Date().toISOString(),
+      voidedBy: me.id, voidedByName: me.name, voidReason: reason,
+    });
+    touch("cashouts", c);
+    save();
+    $("#modal-voidcash").hidden = true;
+    renderAll();
+    toast(`Voided ${money(c.amount)} from ${c.userName} — ${fmtMonth(c.period)} is owing again`);
+  } catch (e) {
+    fail(cloudError(e));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function exportCashLedgerCSV() {
+  const site = currentSiteId();
+  const period = $("#cash-period").value || "";
+  const who = $("#cash-agent").value || "";
+  const rows = cashPositions(site, who, period);
+  const ledger = db.cashouts
+    .filter((c) => (!site || (c.siteId || "") === site)
+                && (!who || c.userId === who)
+                && (!period || c.period === period))
+    .slice().sort((a, b) => (a.handedOverAt < b.handedOverAt ? 1 : -1));
+
+  downloadCSV(`nexus-pos-cashouts-${period || "all"}.csv`, [
+    ["NEXUS//POS cash hand-over ledger"],
+    ["Site", site ? siteName(site) : "ALL SITES"],
+    ["Period", period ? fmtMonth(period) : "ALL PERIODS"],
+    ["Generated", new Date().toISOString()],
+    [],
+    ["POSITION"],
+    ["Agent", "Code", "Site", "Month", "Collected", "Handed over", "Still held", "Month status"],
+    ...rows.map((r) => [r.user.name, r.user.code, siteName(r.siteId), r.period,
+      r.due, r.handedOver, r.outstanding, r.closed ? "CLOSED" : "OPEN"]),
+    [],
+    ["LEDGER"],
+    ["When", "Agent", "Site", "Covers", "Amount", "Method", "Reference", "Recorded by", "Role", "Voided", "Void reason"],
+    ...ledger.map((c) => [c.handedOverAt, c.userName, siteName(c.siteId), c.period,
+      c.amount, PAY_METHODS[c.method] || c.method, c.reference || "",
+      c.recordedByName, c.recordedByRole, c.voidedAt || "", c.voidReason || ""]),
+  ]);
+  toast("Exported the cash-out ledger");
+}
+
+/* ------------------------------------------------------------
    Cloud backend panel
    ------------------------------------------------------------ */
 function renderCloud() {

@@ -20,7 +20,8 @@
     "test:carryover": "node tests/carryover.test.mjs",
     "test:version": "node tests/version.test.mjs",
     "test:suspend": "node tests/suspend.test.mjs",
-    "test:deployset": "node tests/deployset.test.mjs"
+    "test:deployset": "node tests/deployset.test.mjs",
+    "test:cashout": "node tests/cashout.test.mjs"
   },
   "dependencies": {},
   "devDependencies": {

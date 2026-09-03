@@ -415,6 +415,180 @@ function renderMonthEnd() {
   $("#btn-close-month").textContent = closed ? "✓ MONTH CLOSED" : "▣ CLOSE MONTH";
 }
 
+/* ------------------------------------------------------------
+   Cash hand-over
+
+   The statement above says what was collected. This says how much of it
+   has actually been handed in — the number the shop cares about and the
+   one it never had. Closing a month freezes what was collected; it does
+   not mean the money arrived, so a closed month keeps owing until it is
+   handed over, and says so here.
+   ------------------------------------------------------------ */
+function renderCashout() {
+  const user = currentUser();
+  if (!user) return;
+  const site = terminalSiteId();
+  const period = $("#me-period").value || monthKey(new Date());
+  const pos = cashPosition(user.id, period, site);
+
+  // Earlier months still owing. Shown whether or not they are closed —
+  // a closed month with cash outstanding is exactly the case that used to
+  // vanish, because closing looked like finishing.
+  const brought = openCashPeriods(user.id, site).filter((p) => p.period < period);
+  const broughtTotal = brought.reduce((s, p) => s + p.outstanding, 0);
+
+  $("#co-status").innerHTML = pos.outstanding > 0
+    ? `<span class="chip chip-sold"><i></i>${money(pos.outstanding)} STILL TO HAND IN</span>`
+    : pos.due > 0
+      ? `<span class="chip chip-ok"><i></i>SETTLED IN FULL</span>`
+      : `<span class="chip chip-off"><i></i>NOTHING COLLECTED</span>`;
+
+  $("#co-brought").innerHTML = `
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>${esc(fmtMonth(period))}</th><th class="num">AMOUNT</th></tr></thead>
+      <tbody>
+        <tr><td>Cash collected${pos.closed ? ` <span class="cell-sub">frozen at close</span>` : ""}</td><td class="num">${money(pos.due)}</td></tr>
+        <tr><td>Handed over</td><td class="num">${money(pos.handedOver)}</td></tr>
+        <tr class="row-total"><td>Still in your hands</td><td class="num ${pos.outstanding > 0 ? "owed-strong" : "strong"}">${money(pos.outstanding)}</td></tr>
+      </tbody>
+    </table></div>` +
+    (brought.length ? `
+    <h3 class="mini-head">BROUGHT FORWARD — EARLIER MONTHS STILL OWING</h3>
+    <div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>MONTH</th><th class="num">COLLECTED</th><th class="num">HANDED OVER</th><th class="num">STILL OWING</th><th>STATUS</th></tr></thead>
+      <tbody>${brought.map((p) => `
+        <tr>
+          <td>${esc(fmtMonth(p.period))}</td>
+          <td class="num">${money(p.due)}</td>
+          <td class="num">${money(p.handedOver)}</td>
+          <td class="num owed-strong">${money(p.outstanding)}</td>
+          <td>${p.closed ? `<span class="chip chip-ok"><i></i>CLOSED</span>` : `<span class="chip chip-off"><i></i>OPEN</span>`}</td>
+        </tr>`).join("")}
+        <tr class="row-total"><td>Total brought forward</td><td class="num">—</td><td class="num">—</td><td class="num owed-strong">${money(broughtTotal)}</td><td></td></tr>
+      </tbody>
+    </table></div>` : "");
+
+  const live = cashoutsFor(user.id, period, site)
+    .slice().sort((a, b) => (a.handedOverAt < b.handedOverAt ? 1 : -1));
+  const voided = db.cashouts.filter((c) =>
+    c.userId === user.id && c.period === period
+    && (!site || (c.siteId || "") === site) && c.voidedAt);
+
+  $("#co-history").innerHTML = `
+    <h3 class="mini-head">HAND-OVERS FOR ${esc(fmtMonth(period))}</h3>` +
+    (live.length + voided.length === 0
+      ? `<p class="hint">Nothing handed over for this month yet.</p>`
+      : `<div class="table-wrap"><table class="grid-table">
+      <thead><tr><th>WHEN</th><th class="num">AMOUNT</th><th>METHOD</th><th>REFERENCE</th><th>RECORDED BY</th></tr></thead>
+      <tbody>${[...live, ...voided].map((c) => `
+        <tr class="${c.voidedAt ? "row-reversed" : ""}">
+          <td class="cell-date">${fmtDateTime(c.handedOverAt)}</td>
+          <td class="num">${money(c.amount)}</td>
+          <td>${esc(PAY_METHODS[c.method] || c.method)}</td>
+          <td>${esc(c.reference || "—")}</td>
+          <td>${esc(c.recordedByName)}${c.recordedByRole === "admin" ? `<span class="cell-sub">received by an administrator</span>` : ""}
+            ${c.voidedAt ? `<span class="rev-note">VOIDED — ${esc(c.voidReason || "")}</span>` : ""}</td>
+        </tr>`).join("")}
+      </tbody></table></div>`);
+
+  $("#btn-cashout").disabled = !site;
+  $("#btn-cashout").title = site ? "" : "Choose a single site first — cash is accounted for per site";
+}
+
+// The month defaults to the oldest one still owing, not the one on screen.
+// Paying against this month while an older one is short is how a shortfall
+// gets buried, and the agent is rarely the one who notices.
+function openCashout() {
+  const user = currentUser();
+  const site = terminalSiteId();
+  if (!site) return toast("Choose a single site first — cash is accounted for per site", "err");
+
+  const shown = $("#me-period").value || monthKey(new Date());
+  const open = openCashPeriods(user.id, site);
+  const choices = [...new Set([...open.map((p) => p.period), shown])].sort();
+
+  $("#cashout-who").textContent = user.name;
+  $("#cashout-meta").textContent = ` · ${user.code} · ${siteName(site)}`;
+  $("#cashout-period").innerHTML = choices.map((p) => {
+    const pos = cashPosition(user.id, p, site);
+    return `<option value="${p}">${esc(fmtMonth(p))} — ${money(pos.outstanding)} owing</option>`;
+  }).join("");
+  $("#cashout-period").value = open.length ? open[0].period : shown;
+
+  $("#cashout-amount").value = "";
+  $("#cashout-ref").value = "";
+  $("#cashout-method").value = "cash";
+  $("#cashout-err").hidden = true;
+  syncCashoutOwed();
+  $("#modal-cashout").hidden = false;
+  setTimeout(() => $("#cashout-amount").focus(), 40);
+}
+
+// Whose money the open modal is about. An agent hands in their own; an
+// administrator receiving cash sets ui.cashoutFor and the same modal serves.
+function cashoutTarget() {
+  const on = ui.cashoutFor;
+  if (on) return { userId: on.userId, siteId: on.siteId, onBehalf: true };
+  const me = currentUser();
+  return { userId: me ? me.id : "", siteId: terminalSiteId(), onBehalf: false };
+}
+
+function syncCashoutOwed() {
+  const { userId, siteId: site } = cashoutTarget();
+  const period = $("#cashout-period").value;
+  if (!userId || !period) return;
+  const pos = cashPosition(userId, period, site);
+  $("#cashout-owed").innerHTML = pos.outstanding > 0
+    ? `<b>${money(pos.outstanding)}</b> still to hand in for ${esc(fmtMonth(period))} <span class="dim">— ${money(pos.due)} collected, ${money(pos.handedOver)} already in</span>`
+    : `<span class="dim">${esc(fmtMonth(period))} is settled — ${money(pos.due)} collected, ${money(pos.handedOver)} handed in.</span>`;
+  $("#cashout-owed").dataset.owed = String(Math.max(0, pos.outstanding));
+}
+
+async function submitCashout() {
+  const { userId, siteId: site, onBehalf } = cashoutTarget();
+  const me = currentUser();
+  const period = $("#cashout-period").value;
+  const amount = Number($("#cashout-amount").value);
+  const fail = (msg) => {
+    const err = $("#cashout-err");
+    err.textContent = msg; err.hidden = false;
+  };
+  if (!site) return fail("Choose a single site first.");
+  if (!period) return fail("Pick the month this cash covers.");
+  if (!(amount > 0)) return fail("Enter the amount handed over.");
+
+  const pos = cashPosition(userId, period, site);
+  // Handing in more than the month is short is a counting mistake, not
+  // generosity: it leaves a negative balance nothing in the ledger explains.
+  if (amount > pos.outstanding + 0.001) {
+    return fail(`That is more than ${fmtMonth(period)} is short — ${money(pos.outstanding)} is outstanding.`);
+  }
+
+  const btn = $("#cashout-confirm");
+  btn.disabled = true;
+  try {
+    const rec = recordCashout({
+      forUserId: userId, siteId: site, period, amount,
+      method: $("#cashout-method").value,
+      reference: $("#cashout-ref").value,
+      byUserId: me.id,
+    });
+    if (!rec) return fail("Enter the amount handed over.");
+    ui.cashoutFor = null;
+    $("#modal-cashout").hidden = true;
+    renderAll();
+    const left = cashPosition(userId, period, site).outstanding;
+    const who = onBehalf ? `${(userById(userId) || {}).name || "the agent"} — ` : "";
+    toast(left > 0
+      ? `${who}${money(amount)} recorded for ${fmtMonth(period)}, ${money(left)} still to hand in`
+      : `${who}${money(amount)} recorded — ${fmtMonth(period)} is settled in full`);
+  } catch (e) {
+    fail(cloudError(e));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function closeMonth() {
   const user = currentUser();
   const period = $("#me-period").value || monthKey(new Date());

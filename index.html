@@ -207,6 +207,7 @@
           <button class="subtab" data-sub="sites">SITES</button>
           <button class="subtab" data-sub="credit">CREDIT</button>
           <button class="subtab" data-sub="reports">REPORTS</button>
+          <button class="subtab" data-sub="cash">CASH-OUTS</button>
           <button class="subtab" data-sub="cloud">CLOUD</button>
         </nav>
 
@@ -450,6 +451,43 @@
           </section>
         </div>
 
+        <!-- Cash-outs: the reconciliation ledger. What each agent collected,
+             what they have actually handed in, and what is still with them. -->
+        <div id="sub-cash" class="subview">
+          <section class="panel">
+            <header class="panel-head">
+              <h2>CASH POSITION</h2>
+              <div class="panel-actions">
+                <select class="field" id="cash-agent" aria-label="Agent"></select>
+                <input type="month" id="cash-period" class="field" aria-label="Period" />
+                <button class="btn btn-ghost btn-xs" id="btn-cash-export">⇩ EXPORT CSV</button>
+                <button class="btn btn-primary btn-xs" id="btn-cash-receive">▼ RECEIVE CASH</button>
+              </div>
+            </header>
+            <div id="cash-tiles" class="tiles"></div>
+            <p class="hint" id="cash-note"></p>
+            <div class="table-wrap">
+              <table class="grid-table">
+                <thead><tr><th>AGENT</th><th>SITE</th><th>MONTH</th><th class="num">COLLECTED</th><th class="num">HANDED OVER</th><th class="num">STILL HELD</th><th>STATUS</th></tr></thead>
+                <tbody id="cash-position-tbody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <header class="panel-head">
+              <h2>HAND-OVER LEDGER</h2>
+              <span id="cash-ledger-count"></span>
+            </header>
+            <div class="table-wrap">
+              <table class="grid-table">
+                <thead><tr><th>WHEN</th><th>AGENT</th><th>SITE</th><th>COVERS</th><th class="num">AMOUNT</th><th>METHOD</th><th>REFERENCE</th><th>RECORDED BY</th><th>ACTIONS</th></tr></thead>
+                <tbody id="cash-ledger-tbody"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
         <!-- Cloud backend -->
         <div id="sub-cloud" class="subview">
           <div class="cols cols-form">
@@ -591,6 +629,21 @@
           <div id="me-tiles" class="tiles tiles-3"></div>
           <div id="me-breakdown" class="breakdown"></div>
         </section>
+
+        <!-- Money the agent has collected but not yet handed in. Kept
+             separate from the statement above: that says what was taken,
+             this says what is still in the tin. -->
+        <section class="panel">
+          <header class="panel-head">
+            <h2>CASH HAND-OVER</h2>
+            <span id="co-status"></span>
+            <div class="panel-actions">
+              <button class="btn btn-primary btn-xs" id="btn-cashout">▲ CASH OUT</button>
+            </div>
+          </header>
+          <div id="co-brought" class="brought"></div>
+          <div id="co-history"></div>
+        </section>
       </section>
     </main>
 
@@ -634,6 +687,56 @@
       <div class="modal-actions">
         <button class="btn btn-ghost" id="settle-cancel">CANCEL</button>
         <button class="btn btn-primary" id="settle-confirm">▸ RECORD PAYMENT</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Handing cash in. The month it covers is the first field, not the last:
+       money handed over in March is very often February's, and a ledger that
+       cannot say which makes both months look wrong. -->
+  <div class="modal" id="modal-cashout" hidden>
+    <div class="modal-box panel" role="dialog" aria-modal="true" aria-labelledby="cashout-title">
+      <header class="panel-head"><h2 id="cashout-title">▲ CASH OUT</h2></header>
+      <p class="settle-who"><span id="cashout-who">—</span><span class="dim" id="cashout-meta"></span></p>
+      <div class="stack">
+        <label class="lbl" for="cashout-period">WHICH MONTH DOES THIS CASH COVER?</label>
+        <select class="field" id="cashout-period"></select>
+        <p class="cashout-owed" id="cashout-owed"></p>
+        <label class="lbl" for="cashout-amount">AMOUNT HANDED OVER</label>
+        <div class="gen-row">
+          <input type="number" class="field" id="cashout-amount" min="0" step="0.01" />
+          <button type="button" class="btn btn-ghost btn-xs" id="cashout-all">HAND OVER ALL</button>
+        </div>
+        <label class="lbl" for="cashout-method">METHOD</label>
+        <select class="field" id="cashout-method">
+          <option value="cash">CASH</option><option value="mobile">MOBILE MONEY</option><option value="bank">BANK TRANSFER</option>
+        </select>
+        <label class="lbl" for="cashout-ref">REFERENCE <span class="dim">— optional</span></label>
+        <input class="field" id="cashout-ref" maxlength="80" placeholder="Receipt no, deposit slip, who took it…" />
+        <p class="login-err" id="cashout-err" hidden></p>
+      </div>
+      <p class="hint">This is a record of money leaving your hands. It cannot be edited afterwards — an administrator voids a mistake, and the correction stays on the ledger.</p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="cashout-cancel">CANCEL</button>
+        <button class="btn btn-primary" id="cashout-confirm">▸ RECORD HAND-OVER</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cancelling a mistaken hand-over. Administrators only, reason required. -->
+  <div class="modal" id="modal-voidcash" hidden>
+    <div class="modal-box panel modal-narrow" role="dialog" aria-modal="true" aria-labelledby="voidcash-title">
+      <header class="panel-head modal-head-warn"><h2 id="voidcash-title">⚠ VOID HAND-OVER</h2></header>
+      <p class="modal-sub" id="voidcash-what">—</p>
+      <div class="stack">
+        <label class="lbl" for="voidcash-reason">WHY <span class="dim">— goes on the record</span></label>
+        <input class="field" id="voidcash-reason" maxlength="120" placeholder="Entered twice, wrong month, wrong amount…" />
+        <p class="login-err" id="voidcash-err" hidden></p>
+      </div>
+      <p class="hint">The entry stays in the ledger, struck through, with your name against it. The balance it was covering goes back to owing.</p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="voidcash-cancel">CANCEL</button>
+        <button class="btn btn-danger" id="voidcash-confirm">▸ VOID IT</button>
       </div>
     </div>
   </div>

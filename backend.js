@@ -29,6 +29,7 @@ const COLLECTIONS = {
   payments: "payments",
   closings: "closings",
   reversals: "reversals",
+  cashouts: "cashouts",
 };
 
 /* ------------------------------------------------------------
@@ -347,7 +348,7 @@ const Backend = {
     // "in" takes at most 30 values; chunk so a widely-assigned agent still works.
     const chunks = [];
     for (let i = 0; i < mySites.length; i += 30) chunks.push(mySites.slice(i, i + 30));
-    for (const key of ["vouchers", "accounts", "sales", "payments", "reversals"]) {
+    for (const key of ["vouchers", "accounts", "sales", "payments", "reversals", "cashouts"]) {
       for (const chunk of chunks) add(key, [store.where("siteId", "in", chunk)]);
     }
     // An agent reads only their own closed months.

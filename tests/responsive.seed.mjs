@@ -73,6 +73,30 @@ export async function seedBulk(siteIds, agentId, agentName, adminId) {
         }));
       }
     }
+
+    // Cash hand-overs, so the ledger and the position table have rows to
+    // overflow with. One voided, one covering an earlier month, one taken by
+    // an administrator — the three shapes those tables have to render.
+    const month = (back) => {
+      const d = new Date();
+      d.setMonth(d.getMonth() - back);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    };
+    [[0, 40, agentId], [1, 25, agentId], [0, 15, adminId]].forEach(([back, amount, who], k) => {
+      const mine = who === agentId;
+      jobs.push(put('cashouts', `co${si}-${k}`, Object.assign({
+        userId: S(who), userName: S(mine ? agentName : 'Ada Mensah'), siteId: S(siteId),
+        period: S(month(back)), amount: N(amount), method: S(['cash', 'mobile', 'bank'][k % 3]),
+        reference: S(`deposit slip ${si}${k}`),
+        handedOverAt: S(iso(Date.now() - (k + 1) * 864e5)),
+        recordedBy: S(k === 2 ? adminId : who),
+        recordedByName: S(k === 2 || !mine ? 'Ada Mensah' : agentName),
+        recordedByRole: S(k === 2 ? 'admin' : 'agent'),
+      }, k === 1 ? {
+        voidedAt: S(iso(Date.now() - 3600e3)), voidedBy: S(adminId),
+        voidedByName: S('Ada Mensah'), voidReason: S('counted twice at the desk'),
+      } : {})));
+    });
   }
   await Promise.all(jobs);
   return n;

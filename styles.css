@@ -702,6 +702,24 @@ textarea.field { resize: vertical; }
 .row-total td { border-top: 1px solid var(--line-2); background: rgba(56,225,255,.04); font-weight: 700; }
 #me-status { display: inline-flex; }
 
+/* ---------------- cash hand-over ---------------- */
+.brought { display: grid; gap: 4px; }
+.brought .grid-table td:first-child { white-space: normal; }
+#co-status, #cash-ledger-count { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+/* What the chosen month is still short, above the amount field — the number
+   the agent is answering when they type. */
+.cashout-owed {
+  margin: 0; padding: 10px 12px;
+  font: 500 12px/1.5 var(--font-ui); color: var(--ink-2);
+  border-left: 3px solid var(--amber); background: rgba(255,176,58,.07);
+}
+.cashout-owed b { color: var(--amber); font: 800 14px/1 var(--font-mono); }
+/* The ledger filters are a select, a month and two buttons — four controls in
+   a header row built for two. Capped so they sit on one line on a laptop and
+   wrap tidily rather than each claiming a row of its own. */
+#cash-agent { max-width: 210px; }
+#cash-period { max-width: 170px; }
+
 /* ---------------- responsive ---------------- */
 @media (max-width: 1100px) {
   .cols-form { grid-template-columns: 1fr; }

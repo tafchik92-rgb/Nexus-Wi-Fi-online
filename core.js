@@ -93,7 +93,7 @@ const storage = (() => {
 const emptyDb = () => ({
   v: 2,
   sites: [], users: [], vouchers: [], accounts: [], sales: [], payments: [], closings: [],
-  reversals: [],
+  reversals: [], cashouts: [],
 });
 
 // `db` is a read-through mirror of Firestore, kept live by Backend.startSync.
@@ -361,6 +361,115 @@ const closingsFor = (userId, period) =>
 const sitesWorked = (userId, period) => [...new Set(db.sales
   .filter((s) => s.agentId === userId && inPeriod(s.soldAt, period) && !isReversed(s))
   .map((s) => s.siteId))];
+
+/* --- cash hand-overs ------------------------------------------
+   An agent collects money all month — cash sales, and settlements on
+   old debts. The month-end statement has always said how much that came
+   to. It never said how much of it had actually been handed in, so the
+   shop could read a perfect statement and still not know whether the
+   agent was holding $20 or $2,000.
+
+   A cash-out records a hand-over, tagged with the month whose takings it
+   covers. Tagging matters more than it looks: money handed over in March
+   is very often February's, and without saying so the two months both
+   look wrong. So the debt is per month, and it survives the month being
+   closed — closing freezes what was collected, it does not mean the cash
+   ever arrived.
+
+   Like every other ledger here, cash-outs are append-only. A mistaken
+   one is voided by an administrator, not edited away, and the voided row
+   stays on the record.
+   ------------------------------------------------------------ */
+const liveCashouts = () => db.cashouts.filter((c) => !c.voidedAt);
+
+const cashoutsFor = (userId, period, siteId) => liveCashouts().filter((c) =>
+  (!userId || c.userId === userId)
+  && (!period || c.period === period)
+  && (!siteId || (c.siteId || "") === siteId));
+
+const handedOver = (userId, period, siteId) =>
+  cashoutsFor(userId, period, siteId).reduce((sum, c) => sum + c.amount, 0);
+
+// What the month says was collected. A closed month uses its frozen
+// figure: that is what was true at close, and it is the number the agent
+// signed off on. Reopening the calculation later would quietly move the
+// goalposts on money somebody has already been asked to account for.
+function cashDueFor(userId, period, siteId) {
+  const closed = closingFor(userId, period, siteId);
+  return closed ? (closed.totals || {}).totalCashCollected || 0
+                : buildReport(userId, period, siteId).totalCashCollected;
+}
+
+// The whole position for one agent-month: collected, handed in, still held.
+function cashPosition(userId, period, siteId) {
+  const due = cashDueFor(userId, period, siteId);
+  const paid = handedOver(userId, period, siteId);
+  return {
+    period, userId, siteId: siteId || "",
+    due, handedOver: paid,
+    outstanding: Math.round((due - paid) * 100) / 100,
+    closed: !!closingFor(userId, period, siteId),
+  };
+}
+
+// Every month this agent has touched, oldest first — traded in, closed,
+// or handed money over for. A month can owe nothing and still belong
+// here; the caller decides what to show.
+function cashPeriods(userId, siteId) {
+  const at = (s) => !siteId || (s.siteId || "") === siteId;
+  const periods = new Set();
+  for (const s of db.sales) {
+    if (s.agentId === userId && at(s) && !isReversed(s)) periods.add(monthKey(new Date(s.soldAt)));
+  }
+  for (const p of db.payments) {
+    if (p.receivedBy === userId && at(p)) periods.add(monthKey(new Date(p.receivedAt)));
+  }
+  for (const c of liveCashouts()) {
+    if (c.userId === userId && at(c)) periods.add(c.period);
+  }
+  for (const c of db.closings) {
+    if (c.userId === userId && at(c)) periods.add(c.period);
+  }
+  return [...periods].sort();
+}
+
+// The months still owing money, oldest first. This is what "is anything
+// brought forward?" means, and the order is the order to settle in.
+const openCashPeriods = (userId, siteId) =>
+  cashPeriods(userId, siteId)
+    .map((p) => cashPosition(userId, p, siteId))
+    .filter((p) => p.outstanding > 0);
+
+// Records a hand-over. `forUserId` is whose takings the money is: an agent
+// hands in their own, an administrator may record having received someone
+// else's. The rules enforce that distinction; this only carries it.
+function recordCashout({ forUserId, siteId, period, amount, method, reference, byUserId }) {
+  const value = Math.round(Number(amount) * 100) / 100;
+  if (!(value > 0)) return null;
+  const owner = userById(forUserId);
+  const by = userById(byUserId);
+  const cashout = {
+    id: newId(),
+    userId: forUserId,
+    userName: owner ? owner.name : "—",
+    siteId: siteId || "",
+    period,
+    amount: value,
+    method,
+    reference: String(reference || "").trim(),
+    handedOverAt: new Date().toISOString(),
+    recordedBy: byUserId,
+    recordedByName: by ? by.name : "—",
+    // Whether this is the agent's own declaration or an administrator
+    // confirming they took the money. The ledger shows which, because they
+    // are not the same claim.
+    recordedByRole: by && by.role === "admin" ? "admin" : "agent",
+  };
+  db.cashouts.push(cashout);
+  touch("cashouts", cashout);
+  save();
+  return cashout;
+}
 
 // The month-end picture for one operator (or all, when userId is null).
 function buildReport(userId, period, siteId) {
