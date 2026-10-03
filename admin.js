@@ -697,33 +697,157 @@ function renderAdminCredit() {
 
 /* Shared accounts table — used by admin oversight and the agent view. */
 function renderAccountsTable(tbodySel, emptySel, tableSel, siteId, adminView) {
-  const needle = (adminView ? ($("#credit-q") || {}).value : ($("#ag-credit-q") || {}).value) || "";
-  const q = needle.trim().toLowerCase();
-  let rows = openAccounts(siteId);
-  if (q) rows = rows.filter(({ account }) =>
-    `${account.name} ${account.phone}`.toLowerCase().includes(q));
+  const f = adminView ? ui.creditFilters : ui.agCreditFilters;
+  const qField = adminView ? $("#credit-q") : $("#ag-credit-q");
+  const q = (f.q !== undefined ? f.q : (qField ? qField.value : "")).trim().toLowerCase();
+  const ageFilter = f.age || "all";
+  const dateFilter = f.date || "all";
+  const sortBy = f.sort || "age-desc";
 
-  $(emptySel).hidden = openAccounts(siteId).length !== 0;
-  $(tableSel).style.display = openAccounts(siteId).length === 0 ? "none" : "";
-
-  $(tbodySel).innerHTML = rows.map(({ account, balance }) => {
+  // Pre-calculate debt age and payment info for all open accounts
+  const allAccounts = openAccounts(siteId).map(({ account, balance }) => {
     const open = accountOpenSales(account.id);
-    const oldest = open[0];
-    const age = oldest ? Math.floor((Date.now() - new Date(oldest.soldAt)) / 864e5) : 0;
-    const last = accountPayments(account.id)[0];
+    const oldest = open[0] || null;
+    const oldestTs = oldest ? new Date(oldest.soldAt).getTime() : 0;
+    const age = oldestTs ? Math.max(0, Math.floor((Date.now() - oldestTs) / 864e5)) : 0;
+    const last = accountPayments(account.id)[0] || null;
+    const lastPaymentTs = last ? new Date(last.receivedAt).getTime() : 0;
+    const daysSincePayment = last ? Math.max(0, Math.floor((Date.now() - lastPaymentTs) / 864e5)) : null;
+    return { account, balance, open, oldest, oldestTs, age, last, lastPaymentTs, daysSincePayment };
+  });
+
+  let rows = allAccounts;
+
+  // Filter: search by customer name or phone
+  if (q) {
+    rows = rows.filter(({ account }) =>
+      `${account.name} ${account.phone || ""}`.toLowerCase().includes(q)
+    );
+  }
+
+  // Filter: by debt age
+  if (ageFilter === "recent") {
+    rows = rows.filter((x) => x.age <= 7);
+  } else if (ageFilter === "medium") {
+    rows = rows.filter((x) => x.age >= 8 && x.age <= 30);
+  } else if (ageFilter === "overdue") {
+    rows = rows.filter((x) => x.age > 30);
+  } else if (ageFilter === "critical") {
+    rows = rows.filter((x) => x.age > 60);
+  }
+
+  // Filter: by payment date
+  if (dateFilter === "paid-7d") {
+    rows = rows.filter((x) => x.daysSincePayment !== null && x.daysSincePayment <= 7);
+  } else if (dateFilter === "paid-30d") {
+    rows = rows.filter((x) => x.daysSincePayment !== null && x.daysSincePayment <= 30);
+  } else if (dateFilter === "unpaid-30d") {
+    rows = rows.filter((x) => x.daysSincePayment === null || x.daysSincePayment > 30);
+  } else if (dateFilter === "never") {
+    rows = rows.filter((x) => x.last === null);
+  }
+
+  // Sort
+  rows.sort((a, b) => {
+    switch (sortBy) {
+      case "age-desc":
+        return (b.age - a.age) || (b.balance - a.balance) || a.account.name.localeCompare(b.account.name);
+      case "age-asc":
+        return (a.age - b.age) || (b.balance - a.balance) || a.account.name.localeCompare(b.account.name);
+      case "date-desc":
+        if (a.lastPaymentTs && b.lastPaymentTs) return b.lastPaymentTs - a.lastPaymentTs;
+        if (a.lastPaymentTs) return -1;
+        if (b.lastPaymentTs) return 1;
+        return (b.balance - a.balance);
+      case "date-asc":
+        if (a.lastPaymentTs && b.lastPaymentTs) return a.lastPaymentTs - b.lastPaymentTs;
+        if (a.lastPaymentTs) return -1;
+        if (b.lastPaymentTs) return 1;
+        return (b.balance - a.balance);
+      case "bal-desc":
+        return (b.balance - a.balance) || (b.age - a.age);
+      case "bal-asc":
+        return (a.balance - b.balance) || (b.age - a.age);
+      case "name-asc":
+        return a.account.name.localeCompare(b.account.name);
+      case "name-desc":
+        return b.account.name.localeCompare(a.account.name);
+      case "open-desc":
+        return (b.open.length - a.open.length) || (b.balance - a.balance);
+      case "open-asc":
+        return (a.open.length - b.open.length) || (b.balance - a.balance);
+      case "site-asc":
+        return siteName(a.account.siteId).localeCompare(siteName(b.account.siteId));
+      case "site-desc":
+        return siteName(b.account.siteId).localeCompare(siteName(a.account.siteId));
+      default:
+        return (b.age - a.age) || (b.balance - a.balance);
+    }
+  });
+
+  const total = allAccounts.length;
+  const count = rows.length;
+  const isFiltered = Boolean(q || ageFilter !== "all" || dateFilter !== "all" || sortBy !== "age-desc");
+
+  // Summary badge and reset button
+  const badge = $(adminView ? "#credit-count-badge" : "#ag-credit-count-badge");
+  if (badge) {
+    badge.textContent = total === 0 ? ""
+      : isFiltered ? `${count} OF ${total} ACCOUNTS`
+      : `${total} OPEN ACCOUNT${total === 1 ? "" : "S"}`;
+  }
+  const resetBtn = $(adminView ? "#btn-credit-reset" : "#btn-ag-credit-reset");
+  if (resetBtn) {
+    resetBtn.hidden = !isFiltered;
+  }
+
+  // Update sortable header classes & arrows
+  const [sortKey, sortDir] = sortBy.split("-");
+  const table = $(tableSel);
+  if (table) {
+    table.querySelectorAll("th.th-sortable").forEach((th) => {
+      const col = th.dataset.sort;
+      const isSorted = col === sortKey || (col === "balance" && sortKey === "bal");
+      th.classList.toggle("is-sorted", isSorted);
+      th.setAttribute("aria-sort", isSorted ? (sortDir === "asc" ? "ascending" : "descending") : "none");
+      const arrow = th.querySelector(".sort-arrow");
+      if (arrow) {
+        arrow.textContent = isSorted ? (sortDir === "asc" ? "▲" : "▼") : "";
+      }
+    });
+  }
+
+  const emptyEl = $(emptySel);
+  if (emptyEl) emptyEl.hidden = total !== 0;
+  if (table) table.style.display = total === 0 ? "none" : "";
+
+  const tbody = $(tbodySel);
+  if (!tbody) return;
+
+  if (total > 0 && count === 0) {
+    tbody.innerHTML = `<tr><td colspan="${adminView ? 7 : 6}" class="cell-none">NO ACCOUNTS MATCH THE SELECTED FILTERS</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map(({ account, balance, open, age, last, daysSincePayment }) => {
+    const ageClass = age > 60 ? "age-critical" : age > 30 ? "age-overdue" : age <= 7 ? "age-recent" : "age-medium";
+    const lastDisplay = last
+      ? `<span class="cell-date">${fmtDate(last.receivedAt)}</span>${daysSincePayment !== null ? `<span class="cell-sub mono">${daysSincePayment === 0 ? "today" : `${daysSincePayment}d ago`}</span>` : ""}`
+      : `<span class="dim mono">NEVER</span>`;
+
     return `<tr>
       <td>${esc(account.name)}${account.phone ? `<span class="cell-sub mono">${esc(account.phone)}</span>` : ""}</td>
       ${adminView ? `<td>${esc(siteName(account.siteId))}</td>` : ""}
       <td class="num">${open.length}</td>
       <td class="num owed-strong">${money(balance)}</td>
-      <td class="cell-date">${age} day${age === 1 ? "" : "s"}</td>
-      <td class="cell-date">${last ? fmtDate(last.receivedAt) : "—"}</td>
+      <td><span class="age-badge ${ageClass}">${age}d</span> <span class="cell-date dim">${age === 1 ? "1 day" : `${age} days`}</span></td>
+      <td>${lastDisplay}</td>
       <td class="row-acts">
         <button class="row-act" data-action="view-account" data-id="${account.id}">STATEMENT</button>
         <button class="row-act accent" data-action="settle" data-id="${account.id}">SETTLE</button>
       </td>
     </tr>`;
-  }).join("") || `<tr><td colspan="${adminView ? 7 : 6}" class="cell-none">NO ACCOUNTS MATCH THIS SEARCH</td></tr>`;
+  }).join("");
 }
 
 // Whether an agent has finished a period. On ALL SITES an agent who works

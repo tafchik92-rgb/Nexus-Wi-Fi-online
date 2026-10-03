@@ -973,3 +973,69 @@ html { overflow-x: hidden; }
 }
 .rev-note b { color: var(--amber); }
 #rev-details { margin-bottom: 14px; }
+
+/* ---------------- sortable table headers & credit filters ---------------- */
+.th-sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: color .2s, background .2s;
+}
+.th-sortable:hover {
+  color: var(--acc);
+}
+.th-sortable.is-sorted {
+  color: var(--acc);
+}
+.sort-arrow {
+  display: inline-block;
+  margin-left: 5px;
+  font-size: 8.5px;
+  opacity: 0.45;
+  vertical-align: middle;
+}
+.th-sortable.is-sorted .sort-arrow {
+  opacity: 1;
+  color: var(--acc);
+}
+
+/* Debt age badges */
+.age-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font: 700 10.5px/1.2 var(--font-mono);
+  letter-spacing: .06em;
+  margin-right: 6px;
+  border: 1px solid transparent;
+}
+.age-badge.age-critical {
+  color: var(--bad);
+  background: rgba(255, 92, 106, 0.12);
+  border-color: rgba(255, 92, 106, 0.35);
+  box-shadow: 0 0 8px rgba(255, 92, 106, 0.2);
+}
+.age-badge.age-overdue {
+  color: var(--amber);
+  background: rgba(255, 176, 58, 0.12);
+  border-color: rgba(255, 176, 58, 0.35);
+}
+.age-badge.age-medium {
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--line);
+}
+.age-badge.age-recent {
+  color: var(--ok);
+  background: rgba(61, 220, 151, 0.1);
+  border-color: rgba(61, 220, 151, 0.3);
+}
+
+@media (max-width: 580px) {
+  .filters .field {
+    width: 100%;
+    min-width: 0;
+  }
+  .filters input[type="search"].field {
+    min-width: 0;
+  }
+}

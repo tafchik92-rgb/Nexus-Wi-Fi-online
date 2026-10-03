@@ -397,12 +397,50 @@
             <header class="panel-head">
               <h2>CREDIT ACCOUNTS</h2>
               <div class="panel-actions">
-                <input type="search" id="credit-q" class="field" placeholder="Search customer…" aria-label="Search credit accounts" />
+                <span class="panel-note" id="credit-count-badge"></span>
+                <button type="button" class="btn btn-ghost btn-xs" id="btn-credit-reset" hidden>↺ RESET FILTERS</button>
               </div>
             </header>
+            <div class="filters" id="credit-filters">
+              <input type="search" id="credit-q" class="field" placeholder="Search customer or phone…" aria-label="Search credit accounts" />
+              <select id="credit-f-age" class="field" aria-label="Filter by debt age">
+                <option value="all">ALL DEBT AGES</option>
+                <option value="recent">≤ 7 DAYS (RECENT)</option>
+                <option value="medium">8 – 30 DAYS</option>
+                <option value="overdue">&gt; 30 DAYS (OVERDUE)</option>
+                <option value="critical">&gt; 60 DAYS (CRITICAL)</option>
+              </select>
+              <select id="credit-f-date" class="field" aria-label="Filter by payment date">
+                <option value="all">ALL PAYMENT DATES</option>
+                <option value="paid-7d">PAID IN LAST 7 DAYS</option>
+                <option value="paid-30d">PAID IN LAST 30 DAYS</option>
+                <option value="unpaid-30d">NO PAYMENT &gt; 30 DAYS</option>
+                <option value="never">NEVER SETTLED</option>
+              </select>
+              <select id="credit-sort" class="field" aria-label="Sort credit accounts">
+                <option value="age-desc">SORT: OLDEST DEBT FIRST (AGE ↓)</option>
+                <option value="age-asc">SORT: NEWEST DEBT FIRST (AGE ↑)</option>
+                <option value="date-desc">SORT: RECENT PAYMENT FIRST (DATE ↓)</option>
+                <option value="date-asc">SORT: OLDEST PAYMENT FIRST (DATE ↑)</option>
+                <option value="bal-desc">SORT: HIGHEST BALANCE</option>
+                <option value="bal-asc">SORT: LOWEST BALANCE</option>
+                <option value="name-asc">SORT: CUSTOMER (A → Z)</option>
+                <option value="name-desc">SORT: CUSTOMER (Z → A)</option>
+                <option value="open-desc">SORT: MOST OPEN VOUCHERS</option>
+                <option value="site-asc">SORT: SITE NAME</option>
+              </select>
+            </div>
             <div class="table-wrap">
               <table class="grid-table" id="admin-accounts-table">
-                <thead><tr><th>CUSTOMER</th><th>SITE</th><th class="num">OPEN</th><th class="num">BALANCE</th><th>AGE</th><th>LAST PAYMENT</th><th>ACTIONS</th></tr></thead>
+                <thead><tr>
+                  <th class="th-sortable" data-sort="name" role="button" tabindex="0">CUSTOMER <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th class="th-sortable" data-sort="site" role="button" tabindex="0">SITE <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th class="th-sortable num" data-sort="open" role="button" tabindex="0">OPEN <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th class="th-sortable num" data-sort="balance" role="button" tabindex="0">BALANCE <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th class="th-sortable" data-sort="age" role="button" tabindex="0">AGE <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th class="th-sortable" data-sort="date" role="button" tabindex="0">LAST PAYMENT <span class="sort-arrow" aria-hidden="true"></span></th>
+                  <th>ACTIONS</th>
+                </tr></thead>
                 <tbody id="admin-accounts-tbody"></tbody>
               </table>
               <div id="admin-accounts-empty" class="empty" hidden>
@@ -598,12 +636,48 @@
           <header class="panel-head">
             <h2>ACTIVE CREDIT ACCOUNTS</h2>
             <div class="panel-actions">
-              <input type="search" id="ag-credit-q" class="field" placeholder="Search customer…" aria-label="Search credit accounts" />
+              <span class="panel-note" id="ag-credit-count-badge"></span>
+              <button type="button" class="btn btn-ghost btn-xs" id="btn-ag-credit-reset" hidden>↺ RESET FILTERS</button>
             </div>
           </header>
+          <div class="filters" id="ag-credit-filters">
+            <input type="search" id="ag-credit-q" class="field" placeholder="Search customer or phone…" aria-label="Search credit accounts" />
+            <select id="ag-credit-f-age" class="field" aria-label="Filter by debt age">
+              <option value="all">ALL DEBT AGES</option>
+              <option value="recent">≤ 7 DAYS (RECENT)</option>
+              <option value="medium">8 – 30 DAYS</option>
+              <option value="overdue">&gt; 30 DAYS (OVERDUE)</option>
+              <option value="critical">&gt; 60 DAYS (CRITICAL)</option>
+            </select>
+            <select id="ag-credit-f-date" class="field" aria-label="Filter by payment date">
+              <option value="all">ALL PAYMENT DATES</option>
+              <option value="paid-7d">PAID IN LAST 7 DAYS</option>
+              <option value="paid-30d">PAID IN LAST 30 DAYS</option>
+              <option value="unpaid-30d">NO PAYMENT &gt; 30 DAYS</option>
+              <option value="never">NEVER SETTLED</option>
+            </select>
+            <select id="ag-credit-sort" class="field" aria-label="Sort credit accounts">
+              <option value="age-desc">SORT: OLDEST DEBT FIRST (AGE ↓)</option>
+              <option value="age-asc">SORT: NEWEST DEBT FIRST (AGE ↑)</option>
+              <option value="date-desc">SORT: RECENT PAYMENT FIRST (DATE ↓)</option>
+              <option value="date-asc">SORT: OLDEST PAYMENT FIRST (DATE ↑)</option>
+              <option value="bal-desc">SORT: HIGHEST BALANCE</option>
+              <option value="bal-asc">SORT: LOWEST BALANCE</option>
+              <option value="name-asc">SORT: CUSTOMER (A → Z)</option>
+              <option value="name-desc">SORT: CUSTOMER (Z → A)</option>
+              <option value="open-desc">SORT: MOST OPEN VOUCHERS</option>
+            </select>
+          </div>
           <div class="table-wrap">
             <table class="grid-table" id="ag-accounts-table">
-              <thead><tr><th>CUSTOMER</th><th class="num">OPEN</th><th class="num">BALANCE</th><th>AGE</th><th>LAST PAYMENT</th><th>ACTIONS</th></tr></thead>
+              <thead><tr>
+                <th class="th-sortable" data-sort="name" role="button" tabindex="0">CUSTOMER <span class="sort-arrow" aria-hidden="true"></span></th>
+                <th class="th-sortable num" data-sort="open" role="button" tabindex="0">OPEN <span class="sort-arrow" aria-hidden="true"></span></th>
+                <th class="th-sortable num" data-sort="balance" role="button" tabindex="0">BALANCE <span class="sort-arrow" aria-hidden="true"></span></th>
+                <th class="th-sortable" data-sort="age" role="button" tabindex="0">AGE <span class="sort-arrow" aria-hidden="true"></span></th>
+                <th class="th-sortable" data-sort="date" role="button" tabindex="0">LAST PAYMENT <span class="sort-arrow" aria-hidden="true"></span></th>
+                <th>ACTIONS</th>
+              </tr></thead>
               <tbody id="ag-accounts-tbody"></tbody>
             </table>
             <div id="ag-accounts-empty" class="empty" hidden>

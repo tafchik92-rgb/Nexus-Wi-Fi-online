@@ -9,6 +9,8 @@ const ui = {
   sub: "dash",
   filters: { q: "", type: "all", pay: "all", range: "all" },
   vfilters: { type: "all", status: "all", batch: "all" },
+  creditFilters: { q: "", age: "all", date: "all", sort: "age-desc" },
+  agCreditFilters: { q: "", age: "all", date: "all", sort: "age-desc" },
   uploadType: "V5",
   sale: { type: null, pay: "cash" },
   settleAccount: null,
@@ -601,9 +603,113 @@ function wire() {
     $("#cloud-emu-warn").hidden = !e.target.checked;
   });
 
-  // credit search
-  $("#credit-q").addEventListener("input", renderAdminCredit);
-  $("#ag-credit-q").addEventListener("input", renderAgentCredit);
+  // credit oversight & filters
+  $("#credit-q").addEventListener("input", (e) => {
+    ui.creditFilters.q = e.target.value;
+    renderAdminCredit();
+  });
+  $("#credit-f-age").addEventListener("change", (e) => {
+    ui.creditFilters.age = e.target.value;
+    renderAdminCredit();
+  });
+  $("#credit-f-date").addEventListener("change", (e) => {
+    ui.creditFilters.date = e.target.value;
+    renderAdminCredit();
+  });
+  $("#credit-sort").addEventListener("change", (e) => {
+    ui.creditFilters.sort = e.target.value;
+    renderAdminCredit();
+  });
+  $("#btn-credit-reset").addEventListener("click", () => {
+    ui.creditFilters = { q: "", age: "all", date: "all", sort: "age-desc" };
+    $("#credit-q").value = "";
+    $("#credit-f-age").value = "all";
+    $("#credit-f-date").value = "all";
+    $("#credit-sort").value = "age-desc";
+    renderAdminCredit();
+  });
+
+  // Table header clicks for admin credit sorting
+  $$("#admin-accounts-table th.th-sortable").forEach((th) => {
+    const handleSort = () => {
+      const col = th.dataset.sort;
+      const cur = ui.creditFilters.sort;
+      let next = "age-desc";
+      if (col === "name") next = cur === "name-asc" ? "name-desc" : "name-asc";
+      else if (col === "site") next = cur === "site-asc" ? "site-desc" : "site-asc";
+      else if (col === "open") next = cur === "open-desc" ? "open-asc" : "open-desc";
+      else if (col === "balance") next = cur === "bal-desc" ? "bal-asc" : "bal-desc";
+      else if (col === "age") next = cur === "age-desc" ? "age-asc" : "age-desc";
+      else if (col === "date") next = cur === "date-desc" ? "date-asc" : "date-desc";
+
+      ui.creditFilters.sort = next;
+      const sortSel = $("#credit-sort");
+      if (sortSel && [...sortSel.options].some((o) => o.value === next)) {
+        sortSel.value = next;
+      }
+      renderAdminCredit();
+    };
+    th.addEventListener("click", handleSort);
+    th.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleSort();
+      }
+    });
+  });
+
+  // Agent credit filters & sorting
+  $("#ag-credit-q").addEventListener("input", (e) => {
+    ui.agCreditFilters.q = e.target.value;
+    renderAgentCredit();
+  });
+  $("#ag-credit-f-age").addEventListener("change", (e) => {
+    ui.agCreditFilters.age = e.target.value;
+    renderAgentCredit();
+  });
+  $("#ag-credit-f-date").addEventListener("change", (e) => {
+    ui.agCreditFilters.date = e.target.value;
+    renderAgentCredit();
+  });
+  $("#ag-credit-sort").addEventListener("change", (e) => {
+    ui.agCreditFilters.sort = e.target.value;
+    renderAgentCredit();
+  });
+  $("#btn-ag-credit-reset").addEventListener("click", () => {
+    ui.agCreditFilters = { q: "", age: "all", date: "all", sort: "age-desc" };
+    $("#ag-credit-q").value = "";
+    $("#ag-credit-f-age").value = "all";
+    $("#ag-credit-f-date").value = "all";
+    $("#ag-credit-sort").value = "age-desc";
+    renderAgentCredit();
+  });
+
+  $$("#ag-accounts-table th.th-sortable").forEach((th) => {
+    const handleSort = () => {
+      const col = th.dataset.sort;
+      const cur = ui.agCreditFilters.sort;
+      let next = "age-desc";
+      if (col === "name") next = cur === "name-asc" ? "name-desc" : "name-asc";
+      else if (col === "open") next = cur === "open-desc" ? "open-asc" : "open-desc";
+      else if (col === "balance") next = cur === "bal-desc" ? "bal-asc" : "bal-desc";
+      else if (col === "age") next = cur === "age-desc" ? "age-asc" : "age-desc";
+      else if (col === "date") next = cur === "date-desc" ? "date-asc" : "date-desc";
+
+      ui.agCreditFilters.sort = next;
+      const sortSel = $("#ag-credit-sort");
+      if (sortSel && [...sortSel.options].some((o) => o.value === next)) {
+        sortSel.value = next;
+      }
+      renderAgentCredit();
+    };
+    th.addEventListener("click", handleSort);
+    th.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleSort();
+      }
+    });
+  });
 
   // reports
   $("#rep-period").addEventListener("change", renderAdminReports);
