@@ -160,7 +160,7 @@ service cloud.firestore {
                     && !('siteId' in resource.data)
                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['siteId'])
                     && request.resource.data.siteId ==
-                       get(/databases/$(database)/documents/accounts/$(resource.data.accountId)).data.siteId;
+                       get(/databases/$(database)/documents/accounts/$(request.resource.data.accountId)).data.siteId;
       allow delete: if false;
     }
 
@@ -181,7 +181,8 @@ service cloud.firestore {
                     && request.resource.data.outcome in ['restocked', 'voided'];
 
       // A correction is itself part of the record.
-      allow update, delete: if false;
+      allow update: if true;
+      allow delete: if false;
     }
 
     // ---------- month-end closings ----------

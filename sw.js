@@ -29,10 +29,6 @@ const SHELL = [
   "./core.js", "./admin.js", "./agent.js", "./app.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-maskable-512.png",
-  // Vite renames styles.css to a hashed asset; the build injects the real
-  // names here so a first offline launch is fully styled. Serving the plain
-  // static files instead, styles.css below is the one that exists.
-  "./styles.css",
   /*__BUILD_ASSETS__*/
 ];
 
@@ -95,11 +91,18 @@ self.addEventListener("fetch", (e) => {
   e.respondWith((async () => {
     const cache = await caches.open(VERSION);
     try {
+      const fetchReq = url.pathname.endsWith(".css")
+        ? new Request(request.url, { headers: { Accept: "text/css,*/*;q=0.1" } })
+        : request;
       const res = await Promise.race([
-        fetch(request),
+        fetch(fetchReq),
         new Promise((_, reject) => setTimeout(() => reject(new Error("slow")), NETWORK_TIMEOUT)),
       ]);
-      if (res && res.ok) cache.put(request, res.clone());
+      if (res && res.ok) {
+        const ct = (res.headers && res.headers.get("content-type")) || "";
+        const isBadCss = url.pathname.endsWith(".css") && /javascript|ecmascript/i.test(ct);
+        if (!isBadCss) cache.put(request, res.clone());
+      }
       return res;
     } catch (_) {
       const hit = await cache.match(request);

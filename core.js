@@ -259,18 +259,39 @@ const saleOutstanding = (sale) =>
 
 const accountById = (id) => db.accounts.find((a) => a.id === id) || null;
 
-const accountOpenSales = (accountId) => db.sales
-  .filter((s) => s.accountId === accountId && s.pay === "credit" && !isReversed(s) && saleOutstanding(s) > 0)
-  .sort((a, b) => a.soldAt.localeCompare(b.soldAt));
+// Returns the Set of accountIds belonging to an account (including any merged profiles)
+function accountEffectiveIds(accountId) {
+  const ids = new Set([accountId]);
+  const acc = accountById(accountId);
+  if (acc && Array.isArray(acc.mergedAccountIds)) {
+    for (const mId of acc.mergedAccountIds) if (mId) ids.add(mId);
+  }
+  for (const a of db.accounts) {
+    if (a.mergedIntoId === accountId) ids.add(a.id);
+  }
+  return ids;
+}
+
+const accountOpenSales = (accountId) => {
+  const ids = accountEffectiveIds(accountId);
+  return db.sales
+    .filter((s) => ids.has(s.accountId) && s.pay === "credit" && !isReversed(s) && saleOutstanding(s) > 0)
+    .sort((a, b) => a.soldAt.localeCompare(b.soldAt));
+};
 
 const accountBalance = (accountId) =>
   accountOpenSales(accountId).reduce((sum, s) => sum + saleOutstanding(s), 0);
 
-const accountPayments = (accountId) => db.payments
-  .filter((p) => p.accountId === accountId)
-  .sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
+const accountPayments = (accountId) => {
+  const ids = accountEffectiveIds(accountId);
+  return db.payments
+    .filter((p) => ids.has(p.accountId))
+    .sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
+};
 
-const accountsInScope = (siteId) => db.accounts.filter((a) => inSite(a, siteId));
+const accountsInScope = (siteId) => db.accounts.filter((a) =>
+  inSite(a, siteId) && !(a.mergedIntoId && a.mergedIntoId !== a.id && db.accounts.some((x) => x.id === a.mergedIntoId))
+);
 
 const openAccounts = (siteId) => accountsInScope(siteId)
   .map((a) => ({ account: a, balance: accountBalance(a.id) }))
@@ -282,6 +303,567 @@ const totalOutstanding = (siteId) =>
 
 const accountKey = (name, phone) =>
   `${String(name).trim().toLowerCase()}|${String(phone || "").replace(/\D/g, "")}`;
+
+/* --- Client Deduplication, Similarity & Merging ----------------- */
+
+function levenshteinDistance(s1, s2) {
+  const m = s1.length, n = s2.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const d = [];
+  for (let i = 0; i <= m; i++) d[i] = [i];
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(
+        d[i - 1][j] + 1,
+        d[i][j - 1] + 1,
+        d[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return d[m][n];
+}
+
+function stringSimilarity(strA, strB) {
+  const a = String(strA || "").trim().toLowerCase().replace(/[^\w\s]/g, "");
+  const b = String(strB || "").trim().toLowerCase().replace(/[^\w\s]/g, "");
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+
+  // Token set overlap
+  const tokensA = new Set(a.split(/\s+/).filter(Boolean));
+  const tokensB = new Set(b.split(/\s+/).filter(Boolean));
+  let common = 0;
+  for (const t of tokensA) if (tokensB.has(t)) common++;
+  const tokenScore = (2 * common) / (tokensA.size + tokensB.size);
+
+  // Levenshtein edit distance
+  const maxLen = Math.max(a.length, b.length);
+  const levDist = levenshteinDistance(a, b);
+  const levScore = Math.max(0, 1 - levDist / maxLen);
+
+  return Math.max(tokenScore, levScore);
+}
+
+function findSimilarAccounts(name, phone, siteId, excludeId = null) {
+  const queryName = String(name || "").trim();
+  const rawPhone = String(phone || "").replace(/\D/g, "");
+  if (!queryName && !rawPhone) return [];
+
+  const candidates = accountsInScope(siteId).filter((a) => !excludeId || a.id !== excludeId);
+  const matches = [];
+
+  for (const acc of candidates) {
+    const accPhone = String(acc.phone || "").replace(/\D/g, "");
+    let isPhoneMatch = false;
+    if (rawPhone && accPhone) {
+      if (rawPhone === accPhone || (rawPhone.length >= 6 && accPhone.endsWith(rawPhone)) || (accPhone.length >= 6 && rawPhone.endsWith(accPhone))) {
+        isPhoneMatch = true;
+      }
+    }
+
+    const sim = stringSimilarity(queryName, acc.name);
+    const levDist = levenshteinDistance(
+      queryName.toLowerCase().replace(/[^\w]/g, ""),
+      acc.name.toLowerCase().replace(/[^\w]/g, "")
+    );
+
+    // Consider similar if phone matches, or similarity >= 0.75, or edit distance <= 2 for strings >= 4 chars
+    const isSimilar = isPhoneMatch || sim >= 0.75 || (queryName.length >= 4 && levDist <= 2);
+
+    if (isSimilar) {
+      matches.push({
+        account: acc,
+        score: isPhoneMatch ? 0.99 : sim,
+        reason: isPhoneMatch ? "Phone match" : sim >= 0.95 ? "Exact/near-identical name" : `Similar name (~${Math.round(sim * 100)}%)`,
+        balance: accountBalance(acc.id),
+      });
+    }
+  }
+
+  return matches.sort((a, b) => b.score - a.score);
+}
+
+function getMergedProfiles(accountId) {
+  const acc = accountById(accountId);
+  if (!acc) return [];
+  const byId = new Map();
+  if (Array.isArray(acc.mergedProfiles)) {
+    for (const p of acc.mergedProfiles) if (p && p.id) byId.set(p.id, p);
+  }
+  if (Array.isArray(acc.mergedAccountIds)) {
+    for (const mId of acc.mergedAccountIds) {
+      if (mId && !byId.has(mId)) {
+        const sub = accountById(mId);
+        if (sub) byId.set(mId, { id: sub.id, name: sub.name, phone: sub.phone || "", siteId: sub.siteId, createdAt: sub.createdAt });
+      }
+    }
+  }
+  for (const a of db.accounts) {
+    if (a.mergedIntoId === accountId && !byId.has(a.id)) {
+      byId.set(a.id, { id: a.id, name: a.name, phone: a.phone || "", siteId: a.siteId, createdAt: a.createdAt });
+    }
+  }
+  return [...byId.values()];
+}
+
+function mergeAccounts(canonicalId, duplicateId) {
+  if (!canonicalId || !duplicateId || canonicalId === duplicateId) {
+    throw new Error("Invalid accounts to merge");
+  }
+  const canonical = accountById(canonicalId);
+  const duplicate = accountById(duplicateId);
+  if (!canonical || !duplicate) {
+    throw new Error("Account not found");
+  }
+
+  const dupIds = accountEffectiveIds(duplicateId);
+  const salesMoved = db.sales.filter((s) => dupIds.has(s.accountId)).length;
+  const paymentsMoved = db.payments.filter((p) => dupIds.has(p.accountId)).length;
+
+  const mergedAt = new Date().toISOString();
+  const prevMergedIds = Array.isArray(canonical.mergedAccountIds) ? canonical.mergedAccountIds : [];
+  const dupMergedIds = Array.isArray(duplicate.mergedAccountIds) ? duplicate.mergedAccountIds : [];
+  canonical.mergedAccountIds = [...new Set([...prevMergedIds, duplicateId, ...dupMergedIds])];
+
+  const prevProfiles = Array.isArray(canonical.mergedProfiles) ? canonical.mergedProfiles.filter((p) => p && p.id !== duplicate.id) : [];
+  const dupSubProfiles = Array.isArray(duplicate.mergedProfiles) ? duplicate.mergedProfiles : [];
+  canonical.mergedProfiles = [
+    ...prevProfiles,
+    {
+      id: duplicate.id,
+      name: duplicate.name,
+      phone: duplicate.phone || "",
+      siteId: duplicate.siteId,
+      createdAt: duplicate.createdAt || mergedAt,
+      mergedAt,
+    },
+    ...dupSubProfiles.filter((p) => p && !prevProfiles.some((x) => x.id === p.id)),
+  ];
+
+  // If canonical is missing a phone but duplicate had one, carry it over and remember where it came from
+  if (!canonical.phone && duplicate.phone) {
+    canonical.phone = duplicate.phone;
+    canonical.copiedPhoneFrom = duplicate.id;
+  }
+
+  duplicate.mergedIntoId = canonicalId;
+  duplicate.mergedAt = mergedAt;
+
+  touch("accounts", duplicate);
+  touch("accounts", canonical);
+
+  // Invalidate cached balances
+  _paidCache = { rev: -1, map: new Map() };
+  save();
+
+  return { canonical, duplicate, salesMoved, paymentsMoved };
+}
+
+function unmergeAccount(canonicalId, duplicateId = null) {
+  const canonical = accountById(canonicalId);
+  if (!canonical) throw new Error("Account not found");
+
+  const profiles = getMergedProfiles(canonicalId);
+  const targets = duplicateId
+    ? profiles.filter((p) => p.id === duplicateId)
+    : profiles;
+
+  if (targets.length === 0 && duplicateId) {
+    const sub = accountById(duplicateId);
+    if (sub) targets.push({ id: sub.id, name: sub.name, phone: sub.phone || "", siteId: sub.siteId, createdAt: sub.createdAt });
+  }
+  if (targets.length === 0) {
+    throw new Error("No merged client profiles found on this account");
+  }
+
+  const targetIds = new Set(targets.map((t) => t.id));
+  canonical.mergedAccountIds = (canonical.mergedAccountIds || []).filter((id) => !targetIds.has(id));
+  canonical.mergedProfiles = (canonical.mergedProfiles || []).filter((p) => p && !targetIds.has(p.id));
+
+  if (canonical.copiedPhoneFrom && targetIds.has(canonical.copiedPhoneFrom)) {
+    canonical.phone = "";
+    delete canonical.copiedPhoneFrom;
+  }
+  touch("accounts", canonical);
+
+  const restoredAccounts = [];
+  for (const prof of targets) {
+    let dup = accountById(prof.id);
+    if (dup) {
+      delete dup.mergedIntoId;
+      delete dup.mergedAt;
+      if (!dup.name && prof.name) dup.name = prof.name;
+      if (!dup.phone && prof.phone) dup.phone = prof.phone;
+      touch("accounts", dup);
+    } else {
+      dup = {
+        id: prof.id,
+        name: prof.name,
+        phone: prof.phone || "",
+        siteId: prof.siteId || canonical.siteId,
+        createdAt: prof.createdAt || new Date().toISOString(),
+      };
+      db.accounts.push(dup);
+      touch("accounts", dup);
+    }
+    restoredAccounts.push(dup);
+
+    // If any in-memory sales or payments were reassigned to canonicalId with originalAccountId metadata, restore them
+    for (const s of db.sales) {
+      if (s.originalAccountId === dup.id || (s.accountId === canonicalId && s.customer && s.customer.toLowerCase() === dup.name.toLowerCase() && canonical.name.toLowerCase() !== dup.name.toLowerCase())) {
+        s.accountId = dup.id;
+        s.customer = dup.name;
+        if (dup.phone) s.phone = dup.phone;
+      }
+    }
+  }
+
+  _paidCache = { rev: -1, map: new Map() };
+  save();
+
+  return { canonical, restoredAccounts };
+}
+
+// Reconstructs any client accounts that were deleted during an earlier destructive merge
+// while their immutable sales/payments remained in Firestore, and ensures Mai Onita
+// and any client merged with Mai Onita are separated and restored to their original states.
+let _reconcileRunning = false;
+function reconcileClientAccounts() {
+  if (_reconcileRunning) return [];
+  if (!db.sales.length && !db.accounts.length) return [];
+  _reconcileRunning = true;
+  const restoredList = [];
+
+  try {
+    const existingIds = new Set(db.accounts.map((a) => a.id));
+    const orphanIds = new Set();
+
+    for (const s of db.sales) {
+      if (s.accountId && !existingIds.has(s.accountId)) orphanIds.add(s.accountId);
+    }
+    for (const p of db.payments) {
+      if (p.accountId && !existingIds.has(p.accountId)) orphanIds.add(p.accountId);
+    }
+    for (const r of db.reversals || []) {
+      if (r.accountId && !existingIds.has(r.accountId)) orphanIds.add(r.accountId);
+    }
+
+    // Check local backup store if available
+    let localAccounts = [];
+    try {
+      if (typeof readLocalStore === "function") {
+        const local = readLocalStore();
+        if (local && Array.isArray(local.accounts)) localAccounts = local.accounts;
+      }
+    } catch (_) {}
+
+    for (const orphanId of orphanIds) {
+      const sales = db.sales
+        .filter((s) => s.accountId === orphanId)
+        .sort((a, b) => String(a.soldAt || "").localeCompare(String(b.soldAt || "")));
+      const payments = db.payments
+        .filter((p) => p.accountId === orphanId)
+        .sort((a, b) => String(a.receivedAt || "").localeCompare(String(b.receivedAt || "")));
+      const reversals = (db.reversals || []).filter((r) => r.accountId === orphanId);
+      const localAcc = localAccounts.find((a) => a.id === orphanId) || null;
+
+      // Determine original customer name, phone, siteId, createdAt
+      let name = (localAcc && localAcc.name) || "";
+      if (!name) {
+        const saleWithCust = sales.find((s) => s.customer && String(s.customer).trim());
+        if (saleWithCust) name = String(saleWithCust.customer).trim();
+      }
+      if (!name && reversals.length) {
+        const revWithCust = reversals.find((r) => r.customer && String(r.customer).trim());
+        if (revWithCust) name = String(revWithCust.customer).trim();
+      }
+      if (!name && payments.length) {
+        for (const p of payments) {
+          for (const alloc of p.allocations || []) {
+            const allocSale = db.sales.find((x) => x.id === alloc.saleId);
+            if (allocSale && allocSale.customer) {
+              name = String(allocSale.customer).trim();
+              break;
+            }
+          }
+          if (name) break;
+        }
+      }
+      if (!name) continue;
+
+      let phone = (localAcc && localAcc.phone) || "";
+      if (!phone) {
+        const saleWithPhone = sales.find((s) => s.phone && String(s.phone).trim());
+        if (saleWithPhone) phone = String(saleWithPhone.phone).trim();
+      }
+
+      let siteId = (localAcc && localAcc.siteId) || "";
+      if (!siteId && sales.length) siteId = sales[0].siteId || "";
+      if (!siteId && payments.length) siteId = payments[0].siteId || "";
+      if (!siteId && db.sites.length) siteId = db.sites[0].id;
+      if (!siteId) continue;
+
+      let createdAt = (localAcc && localAcc.createdAt) || "";
+      if (!createdAt && sales.length) createdAt = sales[0].soldAt;
+      if (!createdAt && payments.length) createdAt = payments[0].receivedAt;
+      if (!createdAt) createdAt = new Date().toISOString();
+
+      const restoredAcc = {
+        id: orphanId,
+        name,
+        phone,
+        siteId,
+        createdAt,
+      };
+      db.accounts.push(restoredAcc);
+      existingIds.add(orphanId);
+      touch("accounts", restoredAcc);
+      restoredList.push(restoredAcc);
+
+      // If the surviving counterpart account had its empty phone overwritten by this account's phone during the merge,
+      // check whether the counterpart's own sales had no phone and restore counterpart.phone to ""
+      if (phone) {
+        for (const other of db.accounts) {
+          if (other.id === orphanId || other.siteId !== siteId) continue;
+          if (other.phone === phone) {
+            const otherSales = db.sales.filter((s) => s.accountId === other.id);
+            const otherHadOwnPhone = otherSales.some((s) => s.phone && String(s.phone).trim() === phone);
+            if (otherSales.length > 0 && !otherHadOwnPhone) {
+              other.phone = "";
+              touch("accounts", other);
+            }
+          }
+        }
+      }
+    }
+
+    // Also check if Mai Onita (or an account merged with Mai Onita) has active merge metadata or in-memory merged sales
+    const maiRevertKey = "nexuspos.reverted_mai_onita_v1";
+    if (!storage.getItem(maiRevertKey)) {
+      for (const acc of db.accounts.slice()) {
+        const isMai = /mai\s*onita/i.test(acc.name || "");
+        const mergedProfiles = getMergedProfiles(acc.id);
+        const hasMaiInMerged = mergedProfiles.some((p) => /mai\s*onita/i.test(p.name || ""));
+        if ((isMai && mergedProfiles.length > 0) || hasMaiInMerged) {
+          const res = unmergeAccount(acc.id);
+          restoredList.push(...res.restoredAccounts);
+          storage.setItem(maiRevertKey, "1");
+        }
+      }
+      if (restoredList.length > 0) {
+        storage.setItem(maiRevertKey, "1");
+      }
+    }
+
+    if (restoredList.length > 0) {
+      _paidCache = { rev: -1, map: new Map() };
+      save();
+    }
+  } finally {
+    _reconcileRunning = false;
+  }
+
+  return restoredList;
+}
+
+/* --- Voucher Group Quantity Breakdown Helpers --------------- */
+
+function countByVoucherGroup(items) {
+  const counts = { V5: 0, V10: 0, REC: 0, total: 0 };
+  for (const item of items || []) {
+    const t = item && item.type;
+    if (t && counts[t] !== undefined) {
+      counts[t]++;
+      counts.total++;
+    }
+  }
+  return counts;
+}
+
+function settledByVoucherGroup(payments, siteId = "") {
+  const saleIds = new Set();
+  for (const p of payments || []) {
+    if (siteId && (accountById(p.accountId) || {}).siteId !== siteId && (p.siteId || "") !== siteId) continue;
+    for (const a of p.allocations || []) {
+      if (a && a.saleId && a.amount > 0) saleIds.add(a.saleId);
+    }
+  }
+  const sales = [];
+  for (const id of saleIds) {
+    const s = db.sales.find((x) => x.id === id);
+    if (s && !isReversed(s)) sales.push(s);
+  }
+  // Fallback if payments were recorded without explicit allocation arrays:
+  // include credit sales in scope that have received payment
+  if (sales.length === 0 && (payments || []).length > 0) {
+    const paid = paidMap();
+    const accountIds = new Set((payments || []).map((p) => p.accountId).filter(Boolean));
+    for (const s of db.sales) {
+      if (s.pay === "credit" && !isReversed(s) && accountIds.has(s.accountId) && (paid.get(s.id) || 0) > 0) {
+        sales.push(s);
+      }
+    }
+  }
+  return countByVoucherGroup(sales);
+}
+
+function formatGroupQtyInline(counts) {
+  const c = counts || { V5: 0, V10: 0, REC: 0 };
+  return `$5×${c.V5 || 0} · $10×${c.V10 || 0} · REC×${c.REC || 0}`;
+}
+
+function renderTileGroupBreakdown(counts, caption = "") {
+  const c = counts || { V5: 0, V10: 0, REC: 0 };
+  return `<div class="tile-groups" role="group" aria-label="${esc(caption || "Voucher group quantity breakdown")}">
+    ${caption ? `<span class="tg-caption">${esc(caption)}</span>` : ""}
+    <div class="tg-items">
+      <span class="tg-item tg-v5" title="$5 PASS count"><i class="tg-dot"></i><span class="tg-name">$5</span><b class="tg-qty">×${c.V5 || 0}</b></span>
+      <span class="tg-item tg-v10" title="$10 PASS count"><i class="tg-dot"></i><span class="tg-name">$10</span><b class="tg-qty">×${c.V10 || 0}</b></span>
+      <span class="tg-item tg-rec" title="RECON BUNDLE count"><i class="tg-dot"></i><span class="tg-name">REC</span><b class="tg-qty">×${c.REC || 0}</b></span>
+    </div>
+  </div>`;
+}
+
+/* --- Comprehensive Client Ledger System --------------------- */
+
+function buildAccountLedger(accountId) {
+  const emptyCounts = { V5: 0, V10: 0, REC: 0, total: 0 };
+  const account = accountById(accountId);
+  if (!account) {
+    return {
+      events: [],
+      totalIssued: 0,
+      totalSettled: 0,
+      currentBalance: 0,
+      openSales: [],
+      payments: [],
+      liveSalesCount: 0,
+      issuedByType: emptyCounts,
+      openByType: emptyCounts,
+      settledByType: emptyCounts,
+      byTypeSummary: {},
+    };
+  }
+
+  const ids = accountEffectiveIds(accountId);
+  const sales = db.sales.filter((s) => ids.has(s.accountId) && s.pay === "credit");
+  const payments = db.payments.filter((p) => ids.has(p.accountId));
+  const events = [];
+
+  for (const s of sales) {
+    const reversed = isReversed(s);
+    const rev = reversalOf(s.id);
+    events.push({
+      id: s.id,
+      date: s.soldAt,
+      type: "sale",
+      typeLabel: "CREDIT SALE",
+      voucherType: s.type,
+      ref: s.voucherCode,
+      note: `${(VTYPES[s.type] && VTYPES[s.type].label) || s.type}`,
+      debit: s.price,
+      credit: 0,
+      agent: s.agentName,
+      status: reversed ? "reversed" : "active",
+      sale: s,
+    });
+
+    if (reversed && rev) {
+      events.push({
+        id: `rev-${s.id}`,
+        date: rev.reversedAt || s.soldAt,
+        type: "reversal",
+        typeLabel: "REVERSAL",
+        voucherType: s.type,
+        ref: `${s.voucherCode} (REV)`,
+        note: rev.reason || "Sale cancelled",
+        debit: 0,
+        credit: s.price,
+        agent: rev.reversedByName || "Admin",
+        status: "reversal",
+        sale: s,
+      });
+    }
+  }
+
+  for (const p of payments) {
+    const methodLabel = PAY_METHODS[p.method] || p.method.toUpperCase();
+    events.push({
+      id: p.id,
+      date: p.receivedAt,
+      type: "payment",
+      typeLabel: "SETTLEMENT",
+      ref: methodLabel,
+      note: p.note || (p.allocations && p.allocations.length ? `Cleared ${p.allocations.length} voucher(s)` : ""),
+      debit: 0,
+      credit: p.amount,
+      agent: p.receivedByName,
+      status: "settled",
+      payment: p,
+    });
+  }
+
+  // Sort events chronologically ascending
+  events.sort((a, b) => a.date.localeCompare(b.date));
+
+  // Compute cumulative running balance
+  let running = 0;
+  for (const ev of events) {
+    running += (ev.debit - ev.credit);
+    ev.runningBalance = Math.max(0, running);
+  }
+
+  const activeSales = sales.filter((s) => !isReversed(s));
+  const openSales = accountOpenSales(accountId);
+  const paid = paidMap();
+  const settledSales = activeSales.filter((s) => (paid.get(s.id) || 0) > 0 && saleOutstanding(s) === 0);
+  const touchedSettledSales = activeSales.filter((s) => (paid.get(s.id) || 0) > 0);
+
+  const issuedByType = countByVoucherGroup(activeSales);
+  const openByType = countByVoucherGroup(openSales);
+  const settledByType = countByVoucherGroup(settledSales.length > 0 ? settledSales : touchedSettledSales);
+
+  const byTypeSummary = {};
+  for (const t of TYPE_ORDER) {
+    const groupSales = activeSales.filter((s) => s.type === t);
+    const groupOpen = openSales.filter((s) => s.type === t);
+    const groupSettled = groupSales.filter((s) => saleOutstanding(s) === 0 && (paid.get(s.id) || 0) > 0);
+    const issuedAmt = groupSales.reduce((sum, s) => sum + s.price, 0);
+    const openAmt = groupOpen.reduce((sum, s) => sum + saleOutstanding(s), 0);
+    const settledAmt = Math.max(0, issuedAmt - openAmt);
+    byTypeSummary[t] = {
+      issuedCount: groupSales.length,
+      settledCount: groupSettled.length,
+      openCount: groupOpen.length,
+      issuedAmt,
+      settledAmt,
+      openAmt,
+    };
+  }
+
+  const totalIssued = activeSales.reduce((sum, s) => sum + s.price, 0);
+  const totalSettled = payments.reduce((sum, p) => sum + p.amount, 0);
+  const currentBalance = accountBalance(accountId);
+
+  return {
+    account,
+    events,
+    totalIssued,
+    totalSettled,
+    currentBalance,
+    openSales,
+    payments,
+    liveSalesCount: activeSales.length,
+    issuedByType,
+    openByType,
+    settledByType,
+    byTypeSummary,
+  };
+}
 
 function findOrCreateAccount(name, phone, siteId) {
   const key = accountKey(name, phone);

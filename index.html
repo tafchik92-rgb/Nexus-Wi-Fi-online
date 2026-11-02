@@ -170,8 +170,9 @@
       <nav class="tabs" role="tablist" aria-label="Workspace">
         <button class="tab is-active" role="tab" aria-selected="true" data-tab="admin" data-role="admin"><span class="tab-index">01</span> ADMIN</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="terminal"><span class="tab-index">02</span> TERMINAL</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="credit" data-role="agent"><span class="tab-index">03</span> CREDIT</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="monthend" data-role="agent"><span class="tab-index">04</span> MONTH&#8209;END</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="clients"><span class="tab-index">03</span> CLIENTS</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="credit" data-role="agent"><span class="tab-index">04</span> CREDIT</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="monthend" data-role="agent"><span class="tab-index">05</span> MONTH&#8209;END</button>
       </nav>
 
       <div class="topright">
@@ -226,6 +227,7 @@
             <header class="panel-head">
               <h2>SALES RECORDS</h2>
               <div class="panel-actions">
+                <span class="panel-note" id="sales-count-badge"></span>
                 <button class="btn btn-ghost btn-xs" id="btn-export">⇩ EXPORT CSV</button>
               </div>
             </header>
@@ -242,7 +244,7 @@
                 <option value="all">ALL TIME</option><option value="today">TODAY</option><option value="7d">LAST 7 DAYS</option>
               </select>
             </div>
-            <div class="table-wrap">
+            <div class="table-wrap sales-table-wrap" id="sales-table-wrap">
               <table class="grid-table" id="sales-table">
                 <thead><tr><th>DATE</th><th>CUSTOMER</th><th>VOUCHER #</th><th>TYPE</th><th class="num">PRICE</th><th>PAYMENT</th><th>AGENT / SITE</th><th></th></tr></thead>
                 <tbody id="sales-tbody"></tbody>
@@ -398,11 +400,25 @@
               <h2>CREDIT ACCOUNTS</h2>
               <div class="panel-actions">
                 <span class="panel-note" id="credit-count-badge"></span>
+                <button type="button" class="btn btn-ghost btn-xs" id="btn-credit-dedup">⇄ MERGE CLIENTS</button>
                 <button type="button" class="btn btn-ghost btn-xs" id="btn-credit-reset" hidden>↺ RESET FILTERS</button>
               </div>
             </header>
             <div class="filters" id="credit-filters">
               <input type="search" id="credit-q" class="field" placeholder="Search customer or phone…" aria-label="Search credit accounts" />
+              <select id="credit-f-bal" class="field" aria-label="Filter by balance range">
+                <option value="all">ALL BALANCES</option>
+                <option value="under10">&lt; $10 (LOW)</option>
+                <option value="10-25">$10 – $25</option>
+                <option value="25-50">$25 – $50</option>
+                <option value="over50">&gt; $50 (HIGH DEBT)</option>
+                <option value="custom">CUSTOM BALANCE RANGE…</option>
+              </select>
+              <div class="custom-bal-range" id="credit-custom-bal" hidden>
+                <input type="number" id="credit-bal-min" class="field field-sm" min="0" step="1" placeholder="Min $" aria-label="Minimum balance" />
+                <span class="range-sep">–</span>
+                <input type="number" id="credit-bal-max" class="field field-sm" min="0" step="1" placeholder="Max $" aria-label="Maximum balance" />
+              </div>
               <select id="credit-f-age" class="field" aria-label="Filter by debt age">
                 <option value="all">ALL DEBT AGES</option>
                 <option value="recent">≤ 7 DAYS (RECENT)</option>
@@ -592,6 +608,13 @@
                 <input class="field" id="c-name" maxlength="60" placeholder="Full name" />
                 <label class="lbl" for="c-phone">CONTACT <span class="dim">— optional, used to match credit accounts</span></label>
                 <input class="field mono" id="c-phone" maxlength="24" placeholder="+000 000 0000" />
+                <div id="c-dedup-alert" class="dedup-alert" hidden>
+                  <div class="dedup-alert-msg" id="c-dedup-msg"></div>
+                  <div class="dedup-alert-actions">
+                    <button type="button" class="btn btn-xs btn-primary" id="btn-dedup-use">USE EXISTING</button>
+                    <button type="button" class="btn btn-xs btn-ghost" id="btn-dedup-dismiss">KEEP SEPARATE</button>
+                  </div>
+                </div>
               </div>
             </section>
 
@@ -629,6 +652,93 @@
         </div>
       </section>
 
+      <!-- ========================== CLIENTS ========================= -->
+      <section id="view-clients" class="view" role="tabpanel" aria-label="Client Directory and Ledger System">
+        <section class="panel">
+          <header class="panel-head">
+            <div class="client-header-main">
+              <h2>CLIENT LEDGER SYSTEM</h2>
+              <span class="panel-note" id="clients-total-badge"></span>
+            </div>
+            <div class="panel-actions">
+              <button type="button" class="btn btn-ghost btn-xs" id="btn-clients-unmerge" hidden>↺ SEPARATE MERGED</button>
+              <button type="button" class="btn btn-ghost btn-xs" id="btn-clients-merge">⇄ MERGE CLIENTS</button>
+              <button type="button" class="btn btn-ghost btn-xs" id="btn-clients-export">⇩ EXPORT LEDGER CSV</button>
+              <button type="button" class="btn btn-primary btn-xs" id="btn-clients-settle" hidden>⇄ SETTLE DEBT</button>
+            </div>
+          </header>
+
+          <!-- Client Selection & Search Toolbar -->
+          <div class="clients-toolbar">
+            <div class="client-picker-wrap">
+              <label class="lbl" for="clients-select">SELECT CLIENT PROFILE</label>
+              <select id="clients-select" class="field field-clients" aria-label="Select client account"></select>
+            </div>
+            <div class="client-search-wrap">
+              <label class="lbl" for="clients-search">SEARCH CLIENT OR CONTACT</label>
+              <input type="search" id="clients-search" class="field" placeholder="Search customer name or phone…" aria-label="Search client" />
+            </div>
+          </div>
+
+          <!-- Empty state when no clients exist in scope -->
+          <div id="clients-empty" class="empty" hidden>
+            <p class="empty-title">NO CLIENT ACCOUNTS ON RECORD</p>
+            <p class="empty-sub">Credit sales logged at this site will automatically establish client profiles and ledgers.</p>
+          </div>
+
+          <!-- Active Client Ledger View -->
+          <div id="clients-ledger-card" class="client-ledger-card">
+            <div class="client-profile-banner">
+              <div class="client-id-badge">
+                <span class="client-avatar-icon" aria-hidden="true">👤</span>
+                <div>
+                  <h3 class="client-title" id="client-view-name">—</h3>
+                  <p class="client-meta" id="client-view-meta">—</p>
+                </div>
+              </div>
+              <div class="client-status-box" id="client-view-status"></div>
+            </div>
+
+            <!-- KPI Tiles (Total Issued, Settled, Current Balance, Ledger Entries) -->
+            <div id="client-tiles" class="tiles tiles-4"></div>
+
+            <!-- Tab switcher between Full Transaction Ledger and Breakdown -->
+            <div class="ledger-tab-bar">
+              <div class="seg" role="tablist">
+                <button type="button" class="seg-btn is-active" id="client-tab-btn-ledger" data-target="client-ledger-view">◈ FULL TRANSACTION LEDGER</button>
+                <button type="button" class="seg-btn" id="client-tab-btn-breakdown" data-target="client-breakdown-view">▥ SETTLED VS OUTSTANDING BREAKDOWN</button>
+              </div>
+            </div>
+
+            <!-- Full Transaction Ledger View with Running Balances -->
+            <div id="client-ledger-view" class="table-wrap table-tall">
+              <table class="grid-table" id="client-ledger-table">
+                <thead>
+                  <tr>
+                    <th>DATE</th>
+                    <th>TX TYPE</th>
+                    <th>REFERENCE / DETAILS</th>
+                    <th class="num">DEBIT (+)</th>
+                    <th class="num">CREDIT (-)</th>
+                    <th class="num">RUNNING BALANCE</th>
+                    <th>AGENT</th>
+                  </tr>
+                </thead>
+                <tbody id="client-ledger-tbody"></tbody>
+              </table>
+            </div>
+
+            <!-- Settled vs Outstanding Breakdown View -->
+            <div id="client-breakdown-view" hidden>
+              <h3 class="mini-head">UNPAID / OUTSTANDING VOUCHERS</h3>
+              <div id="client-open" class="table-wrap"></div>
+              <h3 class="mini-head">SETTLEMENT PAYMENTS &amp; ALLOCATIONS</h3>
+              <div id="client-pays" class="table-wrap"></div>
+            </div>
+          </div>
+        </section>
+      </section>
+
       <!-- ========================== CREDIT ========================== -->
       <section id="view-credit" class="view" role="tabpanel" aria-label="Credit accounts">
         <div id="ag-credit-tiles" class="tiles tiles-2"></div>
@@ -637,11 +747,25 @@
             <h2>ACTIVE CREDIT ACCOUNTS</h2>
             <div class="panel-actions">
               <span class="panel-note" id="ag-credit-count-badge"></span>
+              <button type="button" class="btn btn-ghost btn-xs" id="btn-ag-credit-dedup">⇄ MERGE CLIENTS</button>
               <button type="button" class="btn btn-ghost btn-xs" id="btn-ag-credit-reset" hidden>↺ RESET FILTERS</button>
             </div>
           </header>
           <div class="filters" id="ag-credit-filters">
             <input type="search" id="ag-credit-q" class="field" placeholder="Search customer or phone…" aria-label="Search credit accounts" />
+            <select id="ag-credit-f-bal" class="field" aria-label="Filter by balance range">
+              <option value="all">ALL BALANCES</option>
+              <option value="under10">&lt; $10 (LOW)</option>
+              <option value="10-25">$10 – $25</option>
+              <option value="25-50">$25 – $50</option>
+              <option value="over50">&gt; $50 (HIGH DEBT)</option>
+              <option value="custom">CUSTOM BALANCE RANGE…</option>
+            </select>
+            <div class="custom-bal-range" id="ag-credit-custom-bal" hidden>
+              <input type="number" id="ag-credit-bal-min" class="field field-sm" min="0" step="1" placeholder="Min $" aria-label="Minimum balance" />
+              <span class="range-sep">–</span>
+              <input type="number" id="ag-credit-bal-max" class="field field-sm" min="0" step="1" placeholder="Max $" aria-label="Maximum balance" />
+            </div>
             <select id="ag-credit-f-age" class="field" aria-label="Filter by debt age">
               <option value="all">ALL DEBT AGES</option>
               <option value="recent">≤ 7 DAYS (RECENT)</option>
@@ -824,18 +948,48 @@
     </div>
   </div>
 
-  <div class="modal" id="modal-stmt" hidden>
-    <div class="modal-box modal-wide panel" role="dialog" aria-modal="true" aria-labelledby="stmt-title">
-      <header class="panel-head"><h2 id="stmt-title">—</h2></header>
-      <p class="modal-sub" id="stmt-sub"></p>
-      <p class="settle-balance">OUTSTANDING <b id="stmt-balance">$0</b></p>
-      <h3 class="mini-head">UNPAID VOUCHERS</h3>
-      <div id="stmt-open" class="table-wrap"></div>
-      <h3 class="mini-head">PAYMENT HISTORY</h3>
-      <div id="stmt-pays" class="table-wrap"></div>
+  <!-- Verification prompt when a similar client is entered during checkout -->
+  <div class="modal" id="modal-dedup-verify" hidden>
+    <div class="modal-box panel modal-narrow" role="dialog" aria-modal="true" aria-labelledby="dedup-verify-title">
+      <header class="panel-head modal-head-warn"><h2 id="dedup-verify-title">⚠ VERIFY CLIENT IDENTITY</h2></header>
+      <p class="modal-sub">SIMILAR CLIENT PROFILE ALREADY EXISTS AT THIS SITE</p>
+      <div id="dedup-verify-body" class="stack"></div>
+      <p class="hint">Merging attaches this sale to the existing customer profile so debt isn't fragmented across multiple names.</p>
       <div class="modal-actions">
-        <button class="btn btn-ghost" id="stmt-close">CLOSE</button>
-        <button class="btn btn-primary" id="stmt-settle">⇄ SETTLE</button>
+        <button type="button" class="btn btn-ghost" id="dedup-verify-separate">KEEP AS NEW CLIENT</button>
+        <button type="button" class="btn btn-primary" id="dedup-verify-merge">▸ USE EXISTING PROFILE</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Client Deduplication & Consolidation Modal -->
+  <div class="modal" id="modal-merge" hidden>
+    <div class="modal-box modal-wide panel" role="dialog" aria-modal="true" aria-labelledby="merge-title">
+      <header class="panel-head"><h2>⇄ MERGE CLIENT PROFILES</h2></header>
+      <p class="modal-sub">CONSOLIDATE DUPLICATE RECORDS UNDER ONE CANONICAL CLIENT</p>
+      <div class="cols cols-merge">
+        <div class="panel merge-pane">
+          <header class="panel-head"><h3>PRIMARY CLIENT (KEEP)</h3></header>
+          <div class="stack">
+            <label class="lbl" for="merge-primary-sel">SELECT TARGET ACCOUNT</label>
+            <select class="field" id="merge-primary-sel"></select>
+            <div id="merge-primary-info" class="merge-info-card"></div>
+          </div>
+        </div>
+        <div class="panel merge-pane">
+          <header class="panel-head"><h3>DUPLICATE CLIENT (MERGE &amp; RETIRE)</h3></header>
+          <div class="stack">
+            <label class="lbl" for="merge-secondary-sel">SELECT DUPLICATE ACCOUNT</label>
+            <select class="field" id="merge-secondary-sel"></select>
+            <div id="merge-secondary-info" class="merge-info-card"></div>
+          </div>
+        </div>
+      </div>
+      <div class="merge-summary-banner" id="merge-summary-banner"></div>
+      <p class="hint">All past credit sales and settlement payments attached to the duplicate client will be safely reassigned to the primary client. The duplicate account record is then cleanly retired.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="merge-cancel">CANCEL</button>
+        <button type="button" class="btn btn-primary" id="merge-confirm">⇄ CONFIRM MERGE</button>
       </div>
     </div>
   </div>

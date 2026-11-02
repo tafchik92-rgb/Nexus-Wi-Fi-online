@@ -26,7 +26,7 @@
    ============================================================ */
 
 // Bumped by hand. Keep in step with package.json.
-const APP_RELEASE = "2.2";
+const APP_RELEASE = "2.3";
 
 // Rewritten in place by vite.config.ts and deploy.sh — the whole line is
 // matched, so do not reformat it.

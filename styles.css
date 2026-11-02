@@ -1039,3 +1039,309 @@ html { overflow-x: hidden; }
     min-width: 0;
   }
 }
+
+/* ---------------- Balance range filter controls ---------------- */
+.custom-bal-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.custom-bal-range .field-sm {
+  width: 90px;
+  padding: 8px 10px;
+  text-align: right;
+  font-family: var(--font-mono);
+}
+.range-sep {
+  color: var(--ink-3);
+  font-weight: 700;
+}
+
+/* ---------------- Client Deduplication & Verification ---------------- */
+.dedup-alert {
+  margin-top: 8px;
+  padding: 10px 14px;
+  background: rgba(255, 176, 58, 0.08);
+  border: 1px solid rgba(255, 176, 58, 0.35);
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: view-in 0.25s ease both;
+}
+.dedup-alert-msg {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.dedup-alert-msg b {
+  color: var(--amber);
+}
+.dedup-alert-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Merge Modal */
+.cols-merge {
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 16px;
+}
+@media (max-width: 720px) {
+  .cols-merge { grid-template-columns: 1fr; }
+}
+.merge-pane {
+  margin-bottom: 0;
+  background: rgba(4, 8, 16, 0.45);
+}
+.merge-pane .panel-head h3 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--ink-2);
+}
+.merge-info-card {
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.merge-summary-banner {
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  background: rgba(56, 225, 255, 0.06);
+  border-left: 3px solid var(--acc);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.merge-summary-banner b {
+  color: var(--acc);
+}
+
+/* ---------------- Client Ledger System & Clients Tab ---------------- */
+.client-header-main {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.clients-toolbar {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  align-items: flex-end;
+  background: rgba(13, 19, 31, 0.45);
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+}
+.client-picker-wrap {
+  flex: 1 1 340px;
+}
+.client-search-wrap {
+  flex: 1 1 260px;
+}
+.field-clients {
+  width: 100%;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.client-profile-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line-2);
+  flex-wrap: wrap;
+}
+.client-id-badge {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.client-avatar-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 4px;
+  background: rgba(56, 225, 255, 0.08);
+  border: 1px solid var(--line);
+  font-size: 20px;
+  color: var(--acc);
+}
+.client-title {
+  font: 800 20px/1.2 var(--font-ui);
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  margin: 0 0 4px;
+}
+.client-meta {
+  font: 500 12px/1 var(--font-mono);
+  color: var(--ink-2);
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+.client-ledger-card {
+  animation: view-in 0.25s ease both;
+}
+.ledger-tab-bar {
+  margin: 14px 0 16px;
+}
+.tiles-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+@media (max-width: 860px) {
+  .tiles-4 { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 480px) {
+  .tiles-4 { grid-template-columns: 1fr; }
+}
+
+.debit-amt {
+  color: var(--amber);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+.credit-amt {
+  color: var(--ok);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+.balance-amt {
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--ink);
+}
+.balance-amt.is-zero {
+  color: var(--ink-3);
+}
+
+.chip-tx-sale     { border-color: rgba(255, 176, 58, 0.35); color: var(--amber); }
+.chip-tx-payment  { border-color: rgba(61, 220, 151, 0.35); color: var(--ok); }
+.chip-tx-reversal { border-color: rgba(255, 92, 106, 0.35); color: var(--bad); }
+
+/* ---------------- Sales Records Scrollable Container ---------------- */
+.sales-table-wrap {
+  max-height: 480px;
+  overflow-y: auto;
+  overflow-x: auto;
+  position: relative;
+  border: 1px solid var(--line);
+  background: rgba(4, 8, 16, 0.4);
+}
+.sales-table-wrap .grid-table th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #0d1523;
+  box-shadow: 0 1px 0 var(--line-2);
+}
+.sales-scroll-hint-row {
+  background: rgba(56, 225, 255, 0.02);
+  transition: background 0.15s;
+}
+.sales-scroll-hint-row:hover {
+  background: rgba(56, 225, 255, 0.06);
+}
+.scroll-hint-cell {
+  text-align: center;
+  padding: 13px 12px !important;
+  font: 700 11px/1.4 var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.scroll-hint-dot {
+  display: inline-block;
+  color: var(--acc);
+  font-size: 10px;
+  margin-right: 6px;
+  animation: bounceDown 1.6s infinite ease-in-out;
+}
+.sales-show-all-btn {
+  margin-left: 10px;
+  color: var(--acc);
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+@keyframes bounceDown {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(3px); }
+}
+
+/* ---------------- Voucher Group Quantity Breakdown in KPI Tiles ---------------- */
+.tile-groups {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed rgba(96, 178, 255, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.tg-caption {
+  font: 700 8.5px/1 var(--font-ui);
+  letter-spacing: 0.16em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+}
+.tg-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.tg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font: 600 10.5px/1.2 var(--font-mono);
+  letter-spacing: 0.04em;
+  background: rgba(4, 8, 16, 0.55);
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+}
+.tg-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.tg-v5 { border-color: rgba(56, 225, 255, 0.28); }
+.tg-v5 .tg-dot { background: var(--acc); box-shadow: 0 0 5px rgba(56, 225, 255, 0.45); }
+.tg-v5 .tg-qty { color: var(--acc); }
+
+.tg-v10 { border-color: rgba(255, 176, 58, 0.32); }
+.tg-v10 .tg-dot { background: var(--amber); box-shadow: 0 0 5px rgba(255, 176, 58, 0.45); }
+.tg-v10 .tg-qty { color: var(--amber); }
+
+.tg-rec { border-color: rgba(255, 90, 209, 0.32); }
+.tg-rec .tg-dot { background: var(--acc-2); box-shadow: 0 0 5px rgba(255, 90, 209, 0.45); }
+.tg-rec .tg-qty { color: var(--acc-2); }
+
+.tg-name {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+.tg-qty {
+  font-weight: 700;
+  color: var(--ink);
+}
+.group-summary-box {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  background: rgba(4, 8, 16, 0.42);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+

@@ -6,7 +6,7 @@ import {defineConfig} from 'vite';
 // cannot bundle them and drops them from the build. Copy them into dist
 // verbatim, otherwise the built page loads no JavaScript at all.
 const STATIC_SCRIPTS = [
-  'version.js', 'firebase-config.js', 'sw.js', 'manifest.webmanifest',
+  'styles.css', 'version.js', 'firebase-config.js', 'sw.js', 'manifest.webmanifest',
   'importer.js', 'backend.js', 'core.js', 'admin.js', 'agent.js', 'app.js',
 ];
 
@@ -85,20 +85,66 @@ const copyStaticScripts = () => ({
   },
 });
 
+const DEV_STAMP = buildStamp();
+
+const devStampPlugin = () => ({
+  name: 'dev-stamp-plugin',
+  configureServer(server: any) {
+    server.middlewares.use((req: any, res: any, next: any) => {
+      const url = (req.url || '').split('?')[0];
+      if (url === '/styles.css') {
+        const cssPath = path.resolve(__dirname, 'styles.css');
+        if (fs.existsSync(cssPath)) {
+          const content = fs.readFileSync(cssPath, 'utf8');
+          res.setHeader('Content-Type', 'text/css; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-store');
+          res.end(content);
+          return;
+        }
+      }
+      if (url === '/version.js') {
+        const verPath = path.resolve(__dirname, 'version.js');
+        if (fs.existsSync(verPath)) {
+          const content = fs.readFileSync(verPath, 'utf8').replace('__BUILD_STAMP__', DEV_STAMP);
+          res.setHeader('Content-Type', 'application/javascript');
+          res.setHeader('Cache-Control', 'no-store');
+          res.end(content);
+          return;
+        }
+      }
+      if (url === '/sw.js') {
+        const swPath = path.resolve(__dirname, 'sw.js');
+        if (fs.existsSync(swPath)) {
+          const content = fs.readFileSync(swPath, 'utf8').replace('/*__BUILD_TIME__*/', DEV_STAMP);
+          res.setHeader('Content-Type', 'application/javascript');
+          res.setHeader('Cache-Control', 'no-store');
+          res.end(content);
+          return;
+        }
+      }
+      next();
+    });
+  },
+});
+
 export default defineConfig(() => {
   return {
-    plugins: [copyStaticScripts()],
+    plugins: [devStampPlugin(), copyStaticScripts()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
     },
     server: {
+      allowedHosts: true,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
+      // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+    },
+    preview: {
+      allowedHosts: true,
     },
   };
 });

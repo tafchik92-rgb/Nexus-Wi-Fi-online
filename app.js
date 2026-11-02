@@ -8,12 +8,17 @@ const ui = {
   tab: "admin",
   sub: "dash",
   filters: { q: "", type: "all", pay: "all", range: "all" },
+  salesVisibleCount: 10,
   vfilters: { type: "all", status: "all", batch: "all" },
-  creditFilters: { q: "", age: "all", date: "all", sort: "age-desc" },
-  agCreditFilters: { q: "", age: "all", date: "all", sort: "age-desc" },
+  creditFilters: { q: "", age: "all", date: "all", sort: "age-desc", bal: "all", minBal: "", maxBal: "" },
+  agCreditFilters: { q: "", age: "all", date: "all", sort: "age-desc", bal: "all", minBal: "", maxBal: "" },
   uploadType: "V5",
   sale: { type: null, pay: "cash" },
   settleAccount: null,
+  statementAccountId: null,
+  selectedClientId: null,
+  dedupCandidate: null,
+  dedupDismissed: false,
   reverseSale: null,
   reverseOutcome: "restocked",
   // Set when an administrator is receiving cash on an agent's behalf, so the
@@ -271,8 +276,18 @@ function guardSession() {
   return true;
 }
 
-// What every sync callback does: end the shift if it is over, otherwise draw.
-const onSync = () => { if (!guardSession()) renderAll(); };
+// What every sync callback does: end the shift if it is over, reconcile any orphaned/accidentally merged client accounts, otherwise draw.
+const onSync = () => {
+  if (guardSession()) return;
+  if (typeof reconcileClientAccounts === "function") {
+    const restored = reconcileClientAccounts();
+    if (restored && restored.length > 0) {
+      const names = restored.map((a) => `${a.name} (${money(accountBalance(a.id))})`).join(", ");
+      toast(`Restored separated client profile(s): ${names}`);
+    }
+  }
+  renderAll();
+};
 
 async function logout() {
   db = emptyDb();                 // don't leave one shift's records on screen
@@ -306,16 +321,17 @@ function enterApp() {
   $("#user-meta").innerHTML = `${esc(user.code)} · ${roleChip(user.role)}`;
 
   // tabs by role
-  // Hide what the role cannot open. The CREDIT and MONTH-END tabs are the
-  // agent's own views; an admin has the same ground under Admin → CREDIT and
-  // Admin → REPORTS. They used to be shown to admins but rejected by setTab,
-  // so clicking them simply did nothing.
   $$(".tab").forEach((b) => {
     const role = b.dataset.role;
     b.hidden = (role === "admin" && !admin) || (role === "agent" && admin);
   });
+  let tabIdx = 1;
+  $$(".tab:not([hidden])").forEach((b) => {
+    const span = b.querySelector(".tab-index");
+    if (span) span.textContent = String(tabIdx++).padStart(2, "0");
+  });
   if (!admin && (ui.tab === "admin")) ui.tab = "terminal";
-  if (admin && !["admin", "terminal"].includes(ui.tab)) ui.tab = "admin";
+  if (admin && !["admin", "terminal", "clients"].includes(ui.tab)) ui.tab = "admin";
 
   renderSiteScope();
   setTab(ui.tab, ui.sub);
@@ -364,7 +380,7 @@ function strandedSession() {
 
 function setTab(tab, sub) {
   const admin = isAdmin();
-  const allowed = admin ? ["admin", "terminal"] : ["terminal", "credit", "monthend"];
+  const allowed = admin ? ["admin", "terminal", "clients"] : ["terminal", "clients", "credit", "monthend"];
   ui.tab = allowed.includes(tab) ? tab : allowed[0];
   if (sub) ui.sub = sub;
 
@@ -408,12 +424,14 @@ function renderAll() {
     renderVoucherSiteSelect();
     renderVouchers();
     renderAdminCredit();
+    renderClientsTab();
     renderAdminReports();
     renderCashLedger();
     renderCloud();
     renderTerminal();
   } else {
     renderTerminal();
+    renderClientsTab();
     renderAgentCredit();
     renderMonthEnd();
     renderCashout();
@@ -506,6 +524,9 @@ function wire() {
   window.addEventListener("hashchange", () => { if (session) routeFromHash(); });
   $("#site-scope").addEventListener("change", (e) => {
     session.siteId = e.target.value;
+    ui.salesVisibleCount = 10;
+    const wrap = $("#sales-table-wrap");
+    if (wrap) wrap.scrollTop = 0;
     saveSession();
     renderAll();
   });
@@ -526,11 +547,46 @@ function wire() {
   });
 
   // admin: dashboard filters
-  $("#f-q").addEventListener("input", (e) => { ui.filters.q = e.target.value; renderSales(); });
-  $("#f-type").addEventListener("change", (e) => { ui.filters.type = e.target.value; renderSales(); });
-  $("#f-pay").addEventListener("change", (e) => { ui.filters.pay = e.target.value; renderSales(); });
-  $("#f-range").addEventListener("change", (e) => { ui.filters.range = e.target.value; renderSales(); });
+  const resetSalesScroll = () => {
+    ui.salesVisibleCount = 10;
+    const wrap = $("#sales-table-wrap");
+    if (wrap) wrap.scrollTop = 0;
+  };
+  $("#f-q").addEventListener("input", (e) => {
+    ui.filters.q = e.target.value;
+    resetSalesScroll();
+    renderSales();
+  });
+  $("#f-type").addEventListener("change", (e) => {
+    ui.filters.type = e.target.value;
+    resetSalesScroll();
+    renderSales();
+  });
+  $("#f-pay").addEventListener("change", (e) => {
+    ui.filters.pay = e.target.value;
+    resetSalesScroll();
+    renderSales();
+  });
+  $("#f-range").addEventListener("change", (e) => {
+    ui.filters.range = e.target.value;
+    resetSalesScroll();
+    renderSales();
+  });
   $("#btn-export").addEventListener("click", exportSalesCSV);
+
+  // Sales records scroll listener — reveals older transactions on scroll
+  const salesWrap = $("#sales-table-wrap");
+  if (salesWrap) {
+    salesWrap.addEventListener("scroll", () => {
+      const rows = filteredSales();
+      const current = ui.salesVisibleCount || 10;
+      if (current >= rows.length) return;
+      if (salesWrap.scrollTop + salesWrap.clientHeight >= salesWrap.scrollHeight - 60) {
+        ui.salesVisibleCount = Math.min(rows.length, current + 10);
+        renderSales();
+      }
+    });
+  }
 
   // admin: team + sites
   $("#user-form").addEventListener("submit", (e) => { e.preventDefault(); addUser(e.target); });
@@ -608,6 +664,20 @@ function wire() {
     ui.creditFilters.q = e.target.value;
     renderAdminCredit();
   });
+  $("#credit-f-bal").addEventListener("change", (e) => {
+    ui.creditFilters.bal = e.target.value;
+    const isCustom = e.target.value === "custom";
+    $("#credit-custom-bal").hidden = !isCustom;
+    renderAdminCredit();
+  });
+  $("#credit-bal-min").addEventListener("input", (e) => {
+    ui.creditFilters.minBal = e.target.value;
+    renderAdminCredit();
+  });
+  $("#credit-bal-max").addEventListener("input", (e) => {
+    ui.creditFilters.maxBal = e.target.value;
+    renderAdminCredit();
+  });
   $("#credit-f-age").addEventListener("change", (e) => {
     ui.creditFilters.age = e.target.value;
     renderAdminCredit();
@@ -620,9 +690,14 @@ function wire() {
     ui.creditFilters.sort = e.target.value;
     renderAdminCredit();
   });
+  $("#btn-credit-dedup").addEventListener("click", () => openMergeModal());
   $("#btn-credit-reset").addEventListener("click", () => {
-    ui.creditFilters = { q: "", age: "all", date: "all", sort: "age-desc" };
+    ui.creditFilters = { q: "", age: "all", date: "all", sort: "age-desc", bal: "all", minBal: "", maxBal: "" };
     $("#credit-q").value = "";
+    $("#credit-f-bal").value = "all";
+    $("#credit-custom-bal").hidden = true;
+    $("#credit-bal-min").value = "";
+    $("#credit-bal-max").value = "";
     $("#credit-f-age").value = "all";
     $("#credit-f-date").value = "all";
     $("#credit-sort").value = "age-desc";
@@ -663,6 +738,20 @@ function wire() {
     ui.agCreditFilters.q = e.target.value;
     renderAgentCredit();
   });
+  $("#ag-credit-f-bal").addEventListener("change", (e) => {
+    ui.agCreditFilters.bal = e.target.value;
+    const isCustom = e.target.value === "custom";
+    $("#ag-credit-custom-bal").hidden = !isCustom;
+    renderAgentCredit();
+  });
+  $("#ag-credit-bal-min").addEventListener("input", (e) => {
+    ui.agCreditFilters.minBal = e.target.value;
+    renderAgentCredit();
+  });
+  $("#ag-credit-bal-max").addEventListener("input", (e) => {
+    ui.agCreditFilters.maxBal = e.target.value;
+    renderAgentCredit();
+  });
   $("#ag-credit-f-age").addEventListener("change", (e) => {
     ui.agCreditFilters.age = e.target.value;
     renderAgentCredit();
@@ -675,9 +764,14 @@ function wire() {
     ui.agCreditFilters.sort = e.target.value;
     renderAgentCredit();
   });
+  $("#btn-ag-credit-dedup").addEventListener("click", () => openMergeModal());
   $("#btn-ag-credit-reset").addEventListener("click", () => {
-    ui.agCreditFilters = { q: "", age: "all", date: "all", sort: "age-desc" };
+    ui.agCreditFilters = { q: "", age: "all", date: "all", sort: "age-desc", bal: "all", minBal: "", maxBal: "" };
     $("#ag-credit-q").value = "";
+    $("#ag-credit-f-bal").value = "all";
+    $("#ag-credit-custom-bal").hidden = true;
+    $("#ag-credit-bal-min").value = "";
+    $("#ag-credit-bal-max").value = "";
     $("#ag-credit-f-age").value = "all";
     $("#ag-credit-f-date").value = "all";
     $("#ag-credit-sort").value = "age-desc";
@@ -746,9 +840,61 @@ function wire() {
     $("#credit-warn").hidden = ui.sale.pay !== "credit";
     renderSummary();
   }));
-  $("#c-name").addEventListener("input", renderSummary);
-  $("#c-phone").addEventListener("input", renderSummary);
+  $("#c-name").addEventListener("input", () => {
+    ui.dedupDismissed = false;
+    renderSummary();
+  });
+  $("#c-phone").addEventListener("input", () => {
+    ui.dedupDismissed = false;
+    renderSummary();
+  });
+  $("#btn-dedup-use").addEventListener("click", () => {
+    if (ui.dedupCandidate) {
+      $("#c-name").value = ui.dedupCandidate.name;
+      if (ui.dedupCandidate.phone && !$("#c-phone").value.trim()) {
+        $("#c-phone").value = ui.dedupCandidate.phone;
+      }
+      ui.dedupCandidate = null;
+      ui.dedupDismissed = false;
+      $("#c-dedup-alert").hidden = true;
+      renderSummary();
+      toast(`Switched to existing client: ${$("#c-name").value}`);
+    }
+  });
+  $("#btn-dedup-dismiss").addEventListener("click", () => {
+    ui.dedupDismissed = true;
+    $("#c-dedup-alert").hidden = true;
+  });
   $("#btn-complete").addEventListener("click", completeSale);
+
+  // checkout dedup verify modal
+  $("#dedup-verify-merge").addEventListener("click", () => {
+    if (ui.dedupCandidate) {
+      $("#c-name").value = ui.dedupCandidate.name;
+      if (ui.dedupCandidate.phone && !$("#c-phone").value.trim()) {
+        $("#c-phone").value = ui.dedupCandidate.phone;
+      }
+      ui.dedupCandidate = null;
+    }
+    ui.dedupDismissed = false;
+    $("#modal-dedup-verify").hidden = true;
+    if ($("#c-dedup-alert")) $("#c-dedup-alert").hidden = true;
+    renderSummary();
+    toast(`Using existing profile: ${$("#c-name").value}`);
+    completeSale();
+  });
+  $("#dedup-verify-separate").addEventListener("click", () => {
+    ui.dedupDismissed = true;
+    $("#modal-dedup-verify").hidden = true;
+    if ($("#c-dedup-alert")) $("#c-dedup-alert").hidden = true;
+    completeSale();
+  });
+
+  // client merge modal
+  $("#merge-primary-sel").addEventListener("change", syncMergeModal);
+  $("#merge-secondary-sel").addEventListener("change", syncMergeModal);
+  $("#merge-cancel").addEventListener("click", () => { $("#modal-merge").hidden = true; });
+  $("#merge-confirm").addEventListener("click", submitMergeProfiles);
 
   // modals
   $("#btn-copy").addEventListener("click", copyCode);
@@ -775,11 +921,27 @@ function wire() {
 
   $("#site-edit-cancel").addEventListener("click", () => { $("#modal-site").hidden = true; });
   $("#site-edit-save").addEventListener("click", saveSiteEdit);
-  $("#stmt-close").addEventListener("click", () => { $("#modal-stmt").hidden = true; });
-  $("#stmt-settle").addEventListener("click", (e) => {
-    $("#modal-stmt").hidden = true;
-    openSettle(e.target.dataset.id);
+  // clients tab & ledger system
+  const cSel = $("#clients-select");
+  if (cSel) cSel.addEventListener("change", (e) => {
+    ui.selectedClientId = e.target.value;
+    renderClientLedger(ui.selectedClientId);
   });
+  const cSearch = $("#clients-search");
+  if (cSearch) cSearch.addEventListener("input", renderClientsTab);
+  const cMerge = $("#btn-clients-merge");
+  if (cMerge) cMerge.addEventListener("click", () => openMergeModal(ui.selectedClientId));
+  const cUnmerge = $("#btn-clients-unmerge");
+  if (cUnmerge) cUnmerge.addEventListener("click", (e) => submitUnmergeAccount(e.target.dataset.id || ui.selectedClientId));
+  const cExport = $("#btn-clients-export");
+  if (cExport) cExport.addEventListener("click", exportClientLedgerCSV);
+  const cSettle = $("#btn-clients-settle");
+  if (cSettle) cSettle.addEventListener("click", (e) => openSettle(e.target.dataset.id || ui.selectedClientId));
+  const cTabLedger = $("#client-tab-btn-ledger");
+  if (cTabLedger) cTabLedger.addEventListener("click", () => switchClientLedgerTab("ledger"));
+  const cTabBreakdown = $("#client-tab-btn-breakdown");
+  if (cTabBreakdown) cTabBreakdown.addEventListener("click", () => switchClientLedgerTab("breakdown"));
+
   $("#receipt-done").addEventListener("click", () => { $("#modal-receipt").hidden = true; });
   $("#diag-close").addEventListener("click", () => { $("#modal-diag").hidden = true; });
   $("#diag-rerun").addEventListener("click", runDiagnostics);
@@ -801,7 +963,19 @@ function wire() {
     if (action === "settle") return openSettle(id);
     if (action === "reverse-sale") return openReversal(id);
     if (action === "void-cashout") return openVoidCashout(id);
-    if (action === "view-account") return openStatement(id);
+    if (action === "view-account") return openClientLedger(id);
+    if (action === "merge-account") return openMergeModal(id);
+    if (action === "unmerge-account") return submitUnmergeAccount(id);
+    if (action === "sales-show-more") {
+      const rows = filteredSales();
+      ui.salesVisibleCount = Math.min(rows.length, (ui.salesVisibleCount || 10) + 10);
+      return renderSales();
+    }
+    if (action === "sales-show-all") {
+      const rows = filteredSales();
+      ui.salesVisibleCount = rows.length;
+      return renderSales();
+    }
 
     if (action === "toggle-user") {
       const u = userById(id);

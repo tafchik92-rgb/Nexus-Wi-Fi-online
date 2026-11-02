@@ -11,45 +11,70 @@ function renderTiles() {
   const site = currentSiteId();
   // Totals count only sales that still stand; reversed ones are history.
   const sales = liveSales(site);
-  const cash = sales.filter((s) => s.pay === "cash").reduce((sum, s) => sum + s.price, 0);
-  const creditIssued = sales.filter((s) => s.pay === "credit").reduce((sum, s) => sum + s.price, 0);
-  const collected = db.payments
-    .filter((p) => !site || (accountById(p.accountId) || {}).siteId === site)
-    .reduce((sum, p) => sum + p.amount, 0);
+  const cashSales = sales.filter((s) => s.pay === "cash");
+  const creditSales = sales.filter((s) => s.pay === "credit");
+  const openCreditSales = creditSales.filter((s) => saleOutstanding(s) > 0);
+  const sitePayments = db.payments
+    .filter((p) => !site || (accountById(p.accountId) || {}).siteId === site);
+
+  const cash = cashSales.reduce((sum, s) => sum + s.price, 0);
+  const creditIssued = creditSales.reduce((sum, s) => sum + s.price, 0);
+  const collected = sitePayments.reduce((sum, p) => sum + p.amount, 0);
   const owed = totalOutstanding(site);
 
   const today = dayKey(new Date());
   const yest = dayKey(Date.now() - 864e5);
-  const todayCount = sales.filter((s) => dayKey(s.soldAt) === today).length;
+  const todaySales = sales.filter((s) => dayKey(s.soldAt) === today);
+  const todayCount = todaySales.length;
   const yestCount = sales.filter((s) => dayKey(s.soldAt) === yest).length;
   const diff = todayCount - yestCount;
   const delta = (yestCount > 0 || todayCount > 0)
     ? `<span class="tile-delta ${diff >= 0 ? "up" : "down"}">${diff >= 0 ? "▲" : "▼"} ${Math.abs(diff)}</span> vs yesterday`
     : "no activity yet";
 
-  const stockTotal = TYPE_ORDER.reduce((sum, t) => sum + stockOf(t, site), 0);
+  const stockCounts = {
+    V5: stockOf("V5", site),
+    V10: stockOf("V10", site),
+    REC: stockOf("REC", site),
+  };
+  const stockTotal = TYPE_ORDER.reduce((sum, t) => sum + stockCounts[t], 0);
   const debtors = openAccounts(site).length;
+
+  // Group quantity breakdowns for each dashboard tile
+  const cashGroupCounts = countByVoucherGroup(cashSales);
+  const settledGroupCounts = settledByVoucherGroup(sitePayments, site);
+  const collectedGroupCounts = {
+    V5: cashGroupCounts.V5 + settledGroupCounts.V5,
+    V10: cashGroupCounts.V10 + settledGroupCounts.V10,
+    REC: cashGroupCounts.REC + settledGroupCounts.REC,
+  };
+  const openDebtGroupCounts = countByVoucherGroup(openCreditSales);
+  const todayGroupCounts = countByVoucherGroup(todaySales);
 
   $("#stat-tiles").innerHTML = `
     <div class="tile">
       <p class="tile-label">CASH COLLECTED</p>
       <p class="tile-value">${moneyCompact(cash + collected)}</p>
       <p class="tile-sub">SALES ${money(cash)} · SETTLEMENTS ${money(collected)}</p>
+      ${renderTileGroupBreakdown(collectedGroupCounts, "COLLECTED QTY BY GROUP")}
     </div>
     <div class="tile tile-warn">
       <p class="tile-label">OUTSTANDING DEBT</p>
       <p class="tile-value">${moneyCompact(owed)}</p>
       <p class="tile-sub">${debtors} OPEN ACCOUNT${debtors === 1 ? "" : "S"} · ${money(creditIssued)} ISSUED</p>
+      ${renderTileGroupBreakdown(openDebtGroupCounts, "UNPAID QTY BY GROUP")}
     </div>
     <div class="tile">
       <p class="tile-label">SALES TODAY</p>
       <p class="tile-value">${todayCount}</p>
       <p class="tile-sub">${delta}</p>
+      ${renderTileGroupBreakdown(todayGroupCounts, "TODAY QTY BY GROUP")}
     </div>
     <div class="tile">
       <p class="tile-label">VOUCHERS IN STOCK</p>
       <p class="tile-value">${stockTotal}</p>
-      <p class="tile-sub">$5×${stockOf("V5", site)} · $10×${stockOf("V10", site)} · REC×${stockOf("REC", site)}</p>
+      <p class="tile-sub">$5×${stockCounts.V5} · $10×${stockCounts.V10} · REC×${stockCounts.REC}</p>
+      ${renderTileGroupBreakdown(stockCounts, "STOCK QTY BY GROUP")}
     </div>`;
 }
 
@@ -200,9 +225,33 @@ function renderSales() {
   $("#sales-empty").hidden = all.length !== 0;
   $("#sales-table").style.display = all.length === 0 ? "none" : "";
 
+  const limit = ui.salesVisibleCount || 10;
+  const visible = rows.slice(0, limit);
+  const remaining = rows.length - visible.length;
+
+  const badge = $("#sales-count-badge");
+  if (badge) {
+    if (all.length === 0) {
+      badge.textContent = "";
+    } else if (rows.length === 0) {
+      badge.textContent = "0 RECORDS";
+    } else if (remaining === 0) {
+      badge.textContent = `${rows.length} RECORD${rows.length === 1 ? "" : "S"}`;
+    } else {
+      badge.textContent = `SHOWING ${visible.length} OF ${rows.length} · SCROLL FOR OLDER`;
+    }
+  }
+
+  if (rows.length === 0) {
+    $("#sales-tbody").innerHTML = all.length > 0
+      ? `<tr><td colspan="8" class="cell-none">NO RECORDS MATCH THE CURRENT FILTERS</td></tr>`
+      : "";
+    return;
+  }
+
   // A reversed sale stays in the ledger, struck through and labelled. Hiding
   // it would leave a voucher back in stock with nothing to account for it.
-  $("#sales-tbody").innerHTML = rows.map((s) => {
+  const rowsHtml = visible.map((s) => {
     const owed = saleOutstanding(s);
     const rev = reversalOf(s.id);
     return `<tr class="${rev ? "row-reversed" : ""}">
@@ -219,8 +268,18 @@ function renderSales() {
         ? `<span class="cell-sub">${esc(rev.reversedByName || "")} · ${fmtDate(rev.reversedAt)}</span>`
         : `<button class="row-act danger" data-action="reverse-sale" data-id="${s.id}">REVERSE</button>`}</td>
     </tr>`;
-  }).join("") || (all.length > 0
-    ? `<tr><td colspan="8" class="cell-none">NO RECORDS MATCH THE CURRENT FILTERS</td></tr>` : "");
+  }).join("");
+
+  const hintHtml = remaining > 0
+    ? `<tr class="sales-scroll-hint-row" id="sales-scroll-hint-row">
+        <td colspan="8" class="scroll-hint-cell" data-action="sales-show-more">
+          <span class="scroll-hint-dot">▼</span> SCROLL DOWN TO REVEAL OLDER TRANSACTIONS (${remaining} MORE)
+          <button type="button" class="link-btn sales-show-all-btn" data-action="sales-show-all" id="btn-sales-show-all">SHOW ALL</button>
+        </td>
+      </tr>`
+    : "";
+
+  $("#sales-tbody").innerHTML = rowsHtml + hintHtml;
 }
 
 /* --- reversing a sale ----------------------------------------
@@ -653,9 +712,16 @@ function renderAdminCredit() {
   const site = currentSiteId();
   const open = openAccounts(site);
   const owed = open.reduce((sum, x) => sum + x.balance, 0);
-  const collected = db.payments
-    .filter((p) => !site || (accountById(p.accountId) || {}).siteId === site)
-    .reduce((sum, p) => sum + p.amount, 0);
+  const sitePayments = db.payments
+    .filter((p) => !site || (accountById(p.accountId) || {}).siteId === site);
+  const collected = sitePayments.reduce((sum, p) => sum + p.amount, 0);
+
+  const openCreditSales = open.flatMap((x) => accountOpenSales(x.account.id));
+  const allCreditSales = liveSales(site).filter((s) => s.pay === "credit");
+  const openGroupCounts = countByVoucherGroup(openCreditSales);
+  const settledGroupCounts = settledByVoucherGroup(sitePayments, site);
+  const issuedGroupCounts = countByVoucherGroup(allCreditSales);
+
   const oldest = open.length
     ? open.map((x) => accountOpenSales(x.account.id)[0]).filter(Boolean)
         .sort((a, b) => a.soldAt.localeCompare(b.soldAt))[0] : null;
@@ -664,17 +730,20 @@ function renderAdminCredit() {
     <div class="tile tile-warn">
       <p class="tile-label">TOTAL OUTSTANDING</p>
       <p class="tile-value">${moneyCompact(owed)}</p>
-      <p class="tile-sub">${open.length} OPEN ACCOUNT${open.length === 1 ? "" : "S"}</p>
+      <p class="tile-sub">${open.length} OPEN ACCOUNT${open.length === 1 ? "" : "S"} · ${openCreditSales.length} UNPAID VOUCHER${openCreditSales.length === 1 ? "" : "S"}</p>
+      ${renderTileGroupBreakdown(openGroupCounts, "UNPAID QTY BY GROUP")}
     </div>
     <div class="tile">
       <p class="tile-label">SETTLED TO DATE</p>
       <p class="tile-value">${moneyCompact(collected)}</p>
-      <p class="tile-sub">${db.payments.length} PAYMENT${db.payments.length === 1 ? "" : "S"} RECORDED</p>
+      <p class="tile-sub">${sitePayments.length} PAYMENT${sitePayments.length === 1 ? "" : "S"} · ${settledGroupCounts.total} VOUCHER${settledGroupCounts.total === 1 ? "" : "S"} CLEARED</p>
+      ${renderTileGroupBreakdown(settledGroupCounts, "SETTLED QTY BY GROUP")}
     </div>
     <div class="tile">
       <p class="tile-label">OLDEST UNPAID</p>
       <p class="tile-value">${oldest ? Math.floor((Date.now() - new Date(oldest.soldAt)) / 864e5) + "d" : "—"}</p>
-      <p class="tile-sub">${oldest ? esc(oldest.customer).toUpperCase() : "NO OPEN DEBT"}</p>
+      <p class="tile-sub">${oldest ? esc(oldest.customer).toUpperCase() : "NO OPEN DEBT"} · ${allCreditSales.length} TOTAL ISSUED</p>
+      ${renderTileGroupBreakdown(issuedGroupCounts, "TOTAL ISSUED QTY BY GROUP")}
     </div>`;
 
   renderAccountsTable("#admin-accounts-tbody", "#admin-accounts-empty", "#admin-accounts-table", site, true);
@@ -747,6 +816,24 @@ function renderAccountsTable(tbodySel, emptySel, tableSel, siteId, adminView) {
     rows = rows.filter((x) => x.last === null);
   }
 
+  // Filter: by balance range
+  const balFilter = f.bal || "all";
+  const minBal = (f.minBal !== "" && f.minBal !== null && f.minBal !== undefined) ? Number(f.minBal) : null;
+  const maxBal = (f.maxBal !== "" && f.maxBal !== null && f.maxBal !== undefined) ? Number(f.maxBal) : null;
+
+  if (balFilter === "under10") {
+    rows = rows.filter((x) => x.balance < 10);
+  } else if (balFilter === "10-25") {
+    rows = rows.filter((x) => x.balance >= 10 && x.balance <= 25);
+  } else if (balFilter === "25-50") {
+    rows = rows.filter((x) => x.balance > 25 && x.balance <= 50);
+  } else if (balFilter === "over50") {
+    rows = rows.filter((x) => x.balance > 50);
+  } else if (balFilter === "custom") {
+    if (minBal !== null && !isNaN(minBal)) rows = rows.filter((x) => x.balance >= minBal);
+    if (maxBal !== null && !isNaN(maxBal)) rows = rows.filter((x) => x.balance <= maxBal);
+  }
+
   // Sort
   rows.sort((a, b) => {
     switch (sortBy) {
@@ -787,7 +874,7 @@ function renderAccountsTable(tbodySel, emptySel, tableSel, siteId, adminView) {
 
   const total = allAccounts.length;
   const count = rows.length;
-  const isFiltered = Boolean(q || ageFilter !== "all" || dateFilter !== "all" || sortBy !== "age-desc");
+  const isFiltered = Boolean(q || ageFilter !== "all" || dateFilter !== "all" || balFilter !== "all" || (balFilter === "custom" && ((minBal !== null && minBal > 0) || maxBal !== null)) || sortBy !== "age-desc");
 
   // Summary badge and reset button
   const badge = $(adminView ? "#credit-count-badge" : "#ag-credit-count-badge");
@@ -834,20 +921,159 @@ function renderAccountsTable(tbodySel, emptySel, tableSel, siteId, adminView) {
     const lastDisplay = last
       ? `<span class="cell-date">${fmtDate(last.receivedAt)}</span>${daysSincePayment !== null ? `<span class="cell-sub mono">${daysSincePayment === 0 ? "today" : `${daysSincePayment}d ago`}</span>` : ""}`
       : `<span class="dim mono">NEVER</span>`;
+    const openGroupCounts = countByVoucherGroup(open);
+    const mergedList = typeof getMergedProfiles === "function" ? getMergedProfiles(account.id) : [];
+    const mergedTag = mergedList.length > 0
+      ? `<span class="cell-sub">⇄ Includes merged: ${mergedList.map((m) => esc(m.name)).join(", ")}</span>`
+      : "";
 
     return `<tr>
-      <td>${esc(account.name)}${account.phone ? `<span class="cell-sub mono">${esc(account.phone)}</span>` : ""}</td>
+      <td>${esc(account.name)}${account.phone ? `<span class="cell-sub mono">${esc(account.phone)}</span>` : ""}${mergedTag}</td>
       ${adminView ? `<td>${esc(siteName(account.siteId))}</td>` : ""}
-      <td class="num">${open.length}</td>
+      <td class="num">${open.length}<span class="cell-sub mono">${formatGroupQtyInline(openGroupCounts)}</span></td>
       <td class="num owed-strong">${money(balance)}</td>
       <td><span class="age-badge ${ageClass}">${age}d</span> <span class="cell-date dim">${age === 1 ? "1 day" : `${age} days`}</span></td>
       <td>${lastDisplay}</td>
       <td class="row-acts">
-        <button class="row-act" data-action="view-account" data-id="${account.id}">STATEMENT</button>
+        <button class="row-act" data-action="view-account" data-id="${account.id}">LEDGER</button>
+        <button class="row-act" data-action="merge-account" data-id="${account.id}" title="Merge with duplicate profile">MERGE</button>
+        ${mergedList.length > 0 ? `<button class="row-act" data-action="unmerge-account" data-id="${account.id}" title="Revert merge and separate profiles">↺ SEPARATE</button>` : ""}
         <button class="row-act accent" data-action="settle" data-id="${account.id}">SETTLE</button>
       </td>
     </tr>`;
   }).join("");
+}
+
+/* --- Client Deduplication & Merging Modal --- */
+
+function openMergeModal(defaultAccountId = null) {
+  const site = currentSiteId() || (session && session.siteId) || "";
+  const accounts = accountsInScope(site);
+  if (accounts.length < 2) {
+    return toast("Need at least two client accounts in this site to perform a merge", "err");
+  }
+
+  const pSel = $("#merge-primary-sel");
+  const sSel = $("#merge-secondary-sel");
+  if (!pSel || !sSel) return;
+
+  const targetId = defaultAccountId || accounts[0].id;
+  pSel.innerHTML = accounts.map((a) => `<option value="${a.id}">${esc(a.name)} (${money(accountBalance(a.id))})</option>`).join("");
+  pSel.value = targetId;
+
+  // Find candidate duplicates for targetId
+  const targetAcc = accountById(targetId);
+  const similars = targetAcc ? findSimilarAccounts(targetAcc.name, targetAcc.phone, site, targetId) : [];
+  const suggestedSecId = similars.length ? similars[0].account.id : (accounts.find((a) => a.id !== targetId) || {}).id;
+
+  sSel.innerHTML = accounts.map((a) => `<option value="${a.id}">${esc(a.name)} (${money(accountBalance(a.id))})</option>`).join("");
+  sSel.value = suggestedSecId || "";
+
+  syncMergeModal();
+  $("#modal-merge").hidden = false;
+}
+
+function syncMergeModal() {
+  const pId = $("#merge-primary-sel") ? $("#merge-primary-sel").value : "";
+  const sId = $("#merge-secondary-sel") ? $("#merge-secondary-sel").value : "";
+  const pAcc = accountById(pId);
+  const sAcc = accountById(sId);
+
+  // Update disabled states
+  $$("#merge-secondary-sel option").forEach((opt) => {
+    opt.disabled = opt.value === pId;
+  });
+  $$("#merge-primary-sel option").forEach((opt) => {
+    opt.disabled = opt.value === sId;
+  });
+
+  const pInfo = $("#merge-primary-info");
+  const sInfo = $("#merge-secondary-info");
+  const banner = $("#merge-summary-banner");
+
+  if (pAcc && pInfo) {
+    const pBal = accountBalance(pAcc.id);
+    const pIds = accountEffectiveIds(pAcc.id);
+    const pSales = db.sales.filter((s) => pIds.has(s.accountId));
+    pInfo.innerHTML = `
+      <div><b>Name:</b> ${esc(pAcc.name)}</div>
+      <div><b>Contact:</b> ${esc(pAcc.phone || "No contact number")}</div>
+      <div><b>Current Balance:</b> <span class="owed-strong">${money(pBal)}</span></div>
+      <div><b>History:</b> ${pSales.length} sale(s) on record</div>
+    `;
+  }
+
+  if (sAcc && sInfo) {
+    const sBal = accountBalance(sAcc.id);
+    const sIds = accountEffectiveIds(sAcc.id);
+    const sSales = db.sales.filter((s) => sIds.has(s.accountId));
+    const sPays = db.payments.filter((p) => sIds.has(p.accountId));
+    sInfo.innerHTML = `
+      <div><b>Name:</b> ${esc(sAcc.name)}</div>
+      <div><b>Contact:</b> ${esc(sAcc.phone || "No contact number")}</div>
+      <div><b>Current Balance:</b> <span class="owed-strong">${money(sBal)}</span></div>
+      <div><b>Records to Consolidate:</b> ${sSales.length} sale(s), ${sPays.length} payment(s)</div>
+    `;
+  }
+
+  if (pAcc && sAcc && banner) {
+    const combinedBal = accountBalance(pAcc.id) + accountBalance(sAcc.id);
+    const sIds = accountEffectiveIds(sAcc.id);
+    const sSales = db.sales.filter((s) => sIds.has(s.accountId)).length;
+    const sPays = db.payments.filter((p) => sIds.has(p.accountId)).length;
+    banner.innerHTML = `
+      Resulting profile <b>${esc(pAcc.name)}</b> will hold a consolidated balance of <b>${money(combinedBal)}</b>.<br>
+      <b>${sSales}</b> credit sale(s) and <b>${sPays}</b> payment record(s) from <b>${esc(sAcc.name)}</b> will be linked under <b>${esc(pAcc.name)}</b> (reversible at any time).
+    `;
+  }
+}
+
+async function submitMergeProfiles() {
+  const pId = $("#merge-primary-sel") ? $("#merge-primary-sel").value : "";
+  const sId = $("#merge-secondary-sel") ? $("#merge-secondary-sel").value : "";
+  if (!pId || !sId || pId === sId) {
+    return toast("Please select two distinct client profiles to merge", "err");
+  }
+
+  const pAcc = accountById(pId);
+  const sAcc = accountById(sId);
+  if (!pAcc || !sAcc) return toast("Selected accounts not found", "err");
+
+  const btn = $("#merge-confirm");
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "◈ MERGING…";
+
+  try {
+    const res = mergeAccounts(pId, sId);
+    $("#modal-merge").hidden = true;
+    renderAll();
+    toast(`Merged ${res.duplicate.name} into ${res.canonical.name} (${res.salesMoved} sales & ${res.paymentsMoved} payments consolidated)`);
+  } catch (err) {
+    toast(`Merge failed: ${err.message}`, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+async function submitUnmergeAccount(accountId, duplicateId = null) {
+  const acc = accountById(accountId);
+  if (!acc) return toast("Client account not found", "err");
+  const merged = typeof getMergedProfiles === "function" ? getMergedProfiles(accountId) : [];
+  if (merged.length === 0) return toast("No merged profiles found on this client account", "err");
+
+  const names = merged.map((m) => m.name).join(", ");
+  if (!(await confirmDlg(`Revert merge and separate ${names} from ${acc.name}? Both client profiles will be restored to their original transaction histories and balances.`))) return;
+
+  try {
+    const res = unmergeAccount(accountId, duplicateId);
+    renderAll();
+    const restoredNames = res.restoredAccounts.map((a) => `${a.name} (${money(accountBalance(a.id))})`).join(", ");
+    toast(`Reverted merge: separated ${restoredNames} from ${acc.name} (${money(accountBalance(acc.id))})`);
+  } catch (err) {
+    toast(`Could not revert merge: ${err.message}`, "err");
+  }
 }
 
 // Whether an agent has finished a period. On ALL SITES an agent who works
@@ -869,27 +1095,36 @@ function renderAdminReports() {
   const period = $("#rep-period").value || monthKey(new Date());
   const site = currentSiteId();
   const overall = buildReport(null, period, site);
+  const periodSales = db.sales.filter((s) => inSite(s, site) && inPeriod(s.soldAt, period) && !isReversed(s));
+  const periodCashCounts = countByVoucherGroup(periodSales.filter((s) => s.pay === "cash"));
+  const periodCreditCounts = countByVoucherGroup(periodSales.filter((s) => s.pay === "credit"));
+  const periodTotalCounts = countByVoucherGroup(periodSales);
+  const openNowCounts = countByVoucherGroup(openAccounts(site).flatMap((x) => accountOpenSales(x.account.id)));
 
   $("#rep-tiles").innerHTML = `
     <div class="tile">
       <p class="tile-label">TOTAL CASH COLLECTED</p>
       <p class="tile-value">${moneyCompact(overall.totalCashCollected)}</p>
       <p class="tile-sub">SALES ${money(overall.cashSalesTotal)} · SETTLEMENTS ${money(overall.debtCollected)}</p>
+      ${renderTileGroupBreakdown(periodCashCounts, "CASH SALES QTY BY GROUP")}
     </div>
     <div class="tile tile-warn">
       <p class="tile-label">CREDIT ISSUED</p>
       <p class="tile-value">${moneyCompact(overall.creditIssued)}</p>
       <p class="tile-sub">${overall.creditCount} SALE${overall.creditCount === 1 ? "" : "S"} · ${money(overall.unpaidFromPeriod)} OF IT STILL UNPAID TODAY</p>
+      ${renderTileGroupBreakdown(periodCreditCounts, "CREDIT QTY BY GROUP")}
     </div>
     <div class="tile">
       <p class="tile-label">TRANSACTIONS</p>
       <p class="tile-value">${overall.salesCount}</p>
       <p class="tile-sub">${overall.cashCount} CASH · ${overall.creditCount} CREDIT</p>
+      ${renderTileGroupBreakdown(periodTotalCounts, "TOTAL QTY BY GROUP")}
     </div>
     <div class="tile tile-warn">
       <p class="tile-label">OUTSTANDING NOW</p>
       <p class="tile-value">${moneyCompact(overall.outstandingNow)}</p>
       <p class="tile-sub">ACROSS ${openAccounts(site).length} ACCOUNT(S)</p>
+      ${renderTileGroupBreakdown(openNowCounts, "UNPAID QTY BY GROUP")}
     </div>`;
 
   const agents = db.users.filter((u) => u.role === "agent" || db.sales.some((s) => s.agentId === u.id));

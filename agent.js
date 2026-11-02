@@ -63,6 +63,42 @@ function pendingAccount() {
   return db.accounts.find((a) => a.siteId === site && accountKey(a.name, a.phone) === key) || null;
 }
 
+function checkCheckoutDedup() {
+  const alertEl = $("#c-dedup-alert");
+  if (!alertEl) return;
+  const name = $("#c-name").value.trim();
+  const phone = $("#c-phone").value.trim();
+  const site = terminalSiteId();
+
+  if (!name || name.length < 2 || !site || ui.dedupDismissed) {
+    alertEl.hidden = true;
+    return;
+  }
+
+  // Exact account match already handled by existing debt banner
+  const exact = pendingAccount();
+  if (exact) {
+    alertEl.hidden = true;
+    return;
+  }
+
+  const similars = findSimilarAccounts(name, phone, site);
+  if (similars.length > 0) {
+    const top = similars[0];
+    ui.dedupCandidate = top.account;
+    const bal = accountBalance(top.account.id);
+    const msgEl = $("#c-dedup-msg");
+    const reason = top.matchType === "phone"
+      ? `Phone matches existing client <b>${esc(top.account.name)}</b>`
+      : `Similar client <b>${esc(top.account.name)}</b> found (${Math.round(top.similarity * 100)}% match)`;
+    msgEl.innerHTML = `⚠ ${reason} · Current Balance: <b>${money(bal)}</b>`;
+    alertEl.hidden = false;
+  } else {
+    ui.dedupCandidate = null;
+    alertEl.hidden = true;
+  }
+}
+
 function renderSummary() {
   const user = currentUser();
   const conf = ui.sale.type ? VTYPES[ui.sale.type] : null;
@@ -82,6 +118,8 @@ function renderSummary() {
     warn.hidden = false;
     warn.innerHTML = `⚠ EXISTING DEBT ${money(bal)} — <button type="button" class="link-btn" data-action="settle" data-id="${acc.id}">SETTLE NOW</button>`;
   } else warn.hidden = true;
+
+  checkCheckoutDedup();
 
   $("#btn-complete").disabled = !(user && conf && name && site);
 }
@@ -142,6 +180,33 @@ async function completeSale() {
   const phone = $("#c-phone").value.trim();
   const price = VTYPES[type].price;
   const onCredit = ui.sale.pay === "credit" && price > 0;
+
+  // Deduplication check when selling on credit:
+  // If not an exact match and a similar profile exists, verify with the operator
+  const exactAcc = pendingAccount();
+  if (onCredit && !exactAcc && !ui.dedupDismissed) {
+    const similars = findSimilarAccounts(customer, phone, site);
+    if (similars.length > 0) {
+      const top = similars[0];
+      ui.dedupCandidate = top.account;
+      const verifyBody = $("#dedup-verify-body");
+      if (verifyBody) {
+        const topBal = accountBalance(top.account.id);
+        const matchLabel = top.matchType === "phone" ? "Matching phone number" : `${Math.round(top.similarity * 100)}% name match`;
+        verifyBody.innerHTML = `
+          <dl class="summary">
+            <div><dt>ENTERED NAME</dt><dd><b>${esc(customer)}</b> ${phone ? `· ${esc(phone)}` : ""}</dd></div>
+            <div><dt>EXISTING PROFILE</dt><dd><b>${esc(top.account.name)}</b> ${top.account.phone ? `· ${esc(top.account.phone)}` : ""}</dd></div>
+            <div><dt>SIMILARITY</dt><dd class="mono">${matchLabel}</dd></div>
+            <div class="summary-total"><dt>EXISTING DEBT</dt><dd class="owed">${money(topBal)}</dd></div>
+          </dl>
+        `;
+      }
+      $("#modal-dedup-verify").hidden = false;
+      return;
+    }
+  }
+
   // Resolved before the claim because the account id belongs in the sale
   // record; the stock check above keeps us from opening one we never use.
   const account = onCredit ? findOrCreateAccount(customer, phone, site) : null;
@@ -205,6 +270,9 @@ async function completeSale() {
   $("#c-name").value = "";
   $("#c-phone").value = "";
   ui.sale.type = null;
+  ui.dedupDismissed = false;
+  ui.dedupCandidate = null;
+  if ($("#c-dedup-alert")) $("#c-dedup-alert").hidden = true;
   renderAll();
 }
 
@@ -231,57 +299,251 @@ function renderAgentCredit() {
   const open = openAccounts(site);
   const owed = open.reduce((sum, x) => sum + x.balance, 0);
   const user = currentUser();
-  const myCollected = db.payments
-    .filter((p) => user && p.receivedBy === user.id)
-    .reduce((sum, p) => sum + p.amount, 0);
+  const myPayments = db.payments.filter((p) => user && p.receivedBy === user.id);
+  const myCollected = myPayments.reduce((sum, p) => sum + p.amount, 0);
 
-  $("#ag-credit-tiles").innerHTML = `
-    <div class="tile tile-warn">
-      <p class="tile-label">OUTSTANDING AT ${esc((siteName(site) || "").toUpperCase())}</p>
-      <p class="tile-value">${moneyCompact(owed)}</p>
-      <p class="tile-sub">${open.length} OPEN ACCOUNT${open.length === 1 ? "" : "S"}</p>
-    </div>
-    <div class="tile">
-      <p class="tile-label">YOU COLLECTED</p>
-      <p class="tile-value">${moneyCompact(myCollected)}</p>
-      <p class="tile-sub">ACROSS ALL SETTLEMENTS YOU RECORDED</p>
-    </div>`;
+  const openCreditSales = open.flatMap((x) => accountOpenSales(x.account.id));
+  const siteCreditSales = liveSales(site).filter((s) => s.pay === "credit");
+  const siteCreditTotal = siteCreditSales.reduce((sum, s) => sum + s.price, 0);
+
+  const openGroupCounts = countByVoucherGroup(openCreditSales);
+  const mySettledCounts = settledByVoucherGroup(myPayments, site);
+  const siteCreditCounts = countByVoucherGroup(siteCreditSales);
+
+  const tilesEl = $("#ag-credit-tiles");
+  if (tilesEl) {
+    tilesEl.classList.remove("tiles-2");
+    tilesEl.classList.add("tiles-3");
+    tilesEl.innerHTML = `
+      <div class="tile tile-warn">
+        <p class="tile-label">OUTSTANDING AT ${esc((siteName(site) || "").toUpperCase())}</p>
+        <p class="tile-value">${moneyCompact(owed)}</p>
+        <p class="tile-sub">${open.length} OPEN ACCOUNT${open.length === 1 ? "" : "S"} · ${openCreditSales.length} UNPAID VOUCHER${openCreditSales.length === 1 ? "" : "S"}</p>
+        ${renderTileGroupBreakdown(openGroupCounts, "UNPAID QTY BY GROUP")}
+      </div>
+      <div class="tile">
+        <p class="tile-label">YOU COLLECTED</p>
+        <p class="tile-value">${moneyCompact(myCollected)}</p>
+        <p class="tile-sub">${myPayments.length} SETTLEMENT${myPayments.length === 1 ? "" : "S"} · ${mySettledCounts.total} VOUCHER${mySettledCounts.total === 1 ? "" : "S"} CLEARED</p>
+        ${renderTileGroupBreakdown(mySettledCounts, "SETTLED QTY BY GROUP")}
+      </div>
+      <div class="tile">
+        <p class="tile-label">TOTAL CREDIT ISSUED</p>
+        <p class="tile-value">${moneyCompact(siteCreditTotal)}</p>
+        <p class="tile-sub">${siteCreditSales.length} CREDIT VOUCHER${siteCreditSales.length === 1 ? "" : "S"} AT SITE</p>
+        ${renderTileGroupBreakdown(siteCreditCounts, "ISSUED QTY BY GROUP")}
+      </div>`;
+  }
 
   renderAccountsTable("#ag-accounts-tbody", "#ag-accounts-empty", "#ag-accounts-table", site, false);
 }
 
-/* --- statement & settlement ---------------------------------- */
-function openStatement(accountId) {
+/* --- clients tab & ledger system ---------------------------- */
+function renderClientsTab() {
+  const site = currentSiteId() || (session && session.siteId) || "";
+  const allAccounts = accountsInScope(site);
+  const emptyEl = $("#clients-empty");
+  const cardEl = $("#clients-ledger-card");
+  const badgeEl = $("#clients-total-badge");
+  const selectEl = $("#clients-select");
+
+  if (!cardEl || !selectEl) return;
+
+  if (allAccounts.length === 0) {
+    if (emptyEl) emptyEl.hidden = false;
+    cardEl.hidden = true;
+    if (badgeEl) badgeEl.textContent = "0 CLIENTS";
+    selectEl.innerHTML = `<option value="">NO CLIENTS IN SCOPE</option>`;
+    if ($("#btn-clients-export")) $("#btn-clients-export").disabled = true;
+    if ($("#btn-clients-settle")) $("#btn-clients-settle").hidden = true;
+    return;
+  }
+
+  if (emptyEl) emptyEl.hidden = true;
+  cardEl.hidden = false;
+  if (badgeEl) {
+    badgeEl.textContent = `${allAccounts.length} CLIENT PROFILE${allAccounts.length === 1 ? "" : "S"}`;
+  }
+
+  // Ensure a valid client is selected
+  if (!ui.selectedClientId || !allAccounts.some((a) => a.id === ui.selectedClientId)) {
+    const withDebt = allAccounts.find((a) => accountBalance(a.id) > 0);
+    ui.selectedClientId = (withDebt || allAccounts[0]).id;
+  }
+
+  // Populate client select with search filter
+  const searchInput = $("#clients-search");
+  const q = (searchInput ? searchInput.value : "").trim().toLowerCase();
+  const list = q
+    ? allAccounts.filter((a) => `${a.name} ${a.phone || ""}`.toLowerCase().includes(q))
+    : allAccounts;
+
+  selectEl.innerHTML = list.length === 0
+    ? `<option value="">NO CLIENTS MATCH "${esc(q)}"</option>`
+    : list.map((a) => {
+        const bal = accountBalance(a.id);
+        const balLabel = bal > 0 ? ` · ${money(bal)} owed` : " · settled";
+        const isSel = a.id === ui.selectedClientId;
+        return `<option value="${a.id}" ${isSel ? "selected" : ""}>${esc(a.name)}${a.phone ? ` (${esc(a.phone)})` : ""}${balLabel}</option>`;
+      }).join("");
+
+  if (list.length > 0 && !list.some((a) => a.id === ui.selectedClientId)) {
+    ui.selectedClientId = list[0].id;
+    selectEl.value = ui.selectedClientId;
+  }
+
+  renderClientLedger(ui.selectedClientId);
+}
+
+function renderClientLedger(accountId) {
   const acc = accountById(accountId);
   if (!acc) return;
-  const open = accountOpenSales(accountId);
-  const pays = accountPayments(accountId);
-  const balance = accountBalance(accountId);
+  ui.selectedClientId = accountId;
 
-  $("#stmt-title").textContent = acc.name;
-  $("#stmt-sub").innerHTML = `${esc(acc.phone || "no contact")} · ${esc(siteName(acc.siteId))} · OPENED ${fmtDate(acc.createdAt)}`;
-  $("#stmt-balance").textContent = money(balance);
-  $("#stmt-open").innerHTML = open.length === 0
-    ? `<p class="hint">No unpaid vouchers — this account is clear.</p>`
-    : `<table class="grid-table"><thead><tr><th>DATE</th><th>VOUCHER</th><th>TYPE</th><th class="num">OWED</th></tr></thead><tbody>` +
+  const ledger = buildAccountLedger(accountId);
+  const open = ledger.openSales;
+  const pays = ledger.payments;
+  const balance = ledger.currentBalance;
+
+  // Header Details
+  const nameEl = $("#client-view-name");
+  if (nameEl) nameEl.textContent = acc.name;
+
+  const mergedList = typeof getMergedProfiles === "function" ? getMergedProfiles(accountId) : [];
+  const metaEl = $("#client-view-meta");
+  if (metaEl) {
+    const mergedText = mergedList.length > 0
+      ? ` · ⇄ INCLUDES MERGED: ${mergedList.map((m) => esc(m.name)).join(", ")}`
+      : "";
+    metaEl.innerHTML = `${esc(acc.phone || "No contact number")} · ${esc(siteName(acc.siteId))} · CLIENT REGISTERED ${fmtDate(acc.createdAt)}${mergedText}`;
+  }
+
+  const statusEl = $("#client-view-status");
+  if (statusEl) {
+    statusEl.innerHTML = balance > 0
+      ? `<span class="chip chip-warn"><i></i>${money(balance)} OUTSTANDING</span>`
+      : `<span class="chip chip-ok"><i></i>ACCOUNT SETTLED</span>`;
+  }
+
+  // KPI Tiles with Voucher Group Quantity Breakdowns
+  const tilesEl = $("#client-tiles");
+  if (tilesEl) {
+    tilesEl.innerHTML = `
+      <div class="tile">
+        <p class="tile-label">TOTAL ISSUED</p>
+        <p class="tile-value">${moneyCompact(ledger.totalIssued)}</p>
+        <p class="tile-sub">${ledger.liveSalesCount} CREDIT VOUCHER${ledger.liveSalesCount === 1 ? "" : "S"} ISSUED</p>
+        ${renderTileGroupBreakdown(ledger.issuedByType, "ISSUED QTY BY GROUP")}
+      </div>
+      <div class="tile">
+        <p class="tile-label">SETTLED AMOUNT</p>
+        <p class="tile-value">${moneyCompact(ledger.totalSettled)}</p>
+        <p class="tile-sub">${pays.length} PAYMENT${pays.length === 1 ? "" : "S"} · ${ledger.settledByType.total} VOUCHER${ledger.settledByType.total === 1 ? "" : "S"} CLEARED</p>
+        ${renderTileGroupBreakdown(ledger.settledByType, "SETTLED QTY BY GROUP")}
+      </div>
+      <div class="tile ${balance > 0 ? "tile-warn" : ""}">
+        <p class="tile-label">CURRENT BALANCE</p>
+        <p class="tile-value ${balance > 0 ? "owed" : "clear"}">${money(balance)}</p>
+        <p class="tile-sub">${open.length} UNPAID VOUCHER${open.length === 1 ? "" : "S"}</p>
+        ${renderTileGroupBreakdown(ledger.openByType, "UNPAID QTY BY GROUP")}
+      </div>
+      <div class="tile">
+        <p class="tile-label">LEDGER ENTRIES</p>
+        <p class="tile-value">${ledger.events.length}</p>
+        <p class="tile-sub">${ledger.liveSalesCount} SALE${ledger.liveSalesCount === 1 ? "" : "S"} · ${pays.length} SETTLEMENT${pays.length === 1 ? "" : "S"}</p>
+        ${renderTileGroupBreakdown(ledger.issuedByType, "GROUP ITEM SUMMARY")}
+      </div>
+    `;
+  }
+
+  // Action Buttons
+  const unmergeBtn = $("#btn-clients-unmerge");
+  if (unmergeBtn) {
+    unmergeBtn.dataset.id = accountId;
+    unmergeBtn.hidden = mergedList.length === 0;
+  }
+  const settleBtn = $("#btn-clients-settle");
+  if (settleBtn) {
+    settleBtn.dataset.id = accountId;
+    settleBtn.hidden = balance <= 0;
+  }
+  const exportBtn = $("#btn-clients-export");
+  if (exportBtn) {
+    exportBtn.disabled = ledger.events.length === 0;
+  }
+
+  // Render Full Chronological Ledger
+  const ledgerTbody = $("#client-ledger-tbody");
+  if (ledgerTbody) {
+    if (ledger.events.length === 0) {
+      ledgerTbody.innerHTML = `<tr><td colspan="7" class="cell-none">NO TRANSACTIONS RECORDED ON THIS ACCOUNT</td></tr>`;
+    } else {
+      ledgerTbody.innerHTML = ledger.events.map((ev) => {
+        const chip = ev.type === "sale" ? `<span class="chip chip-warn"><i></i>SALE</span>`
+          : ev.type === "payment" ? `<span class="chip chip-ok"><i></i>SETTLEMENT</span>`
+          : `<span class="chip chip-off"><i></i>REVERSAL</span>`;
+        const vChip = ev.voucherType ? ` ${typeChip(ev.voucherType)}` : "";
+        return `<tr>
+          <td class="cell-date">${fmtDateTime(ev.date)}</td>
+          <td>${chip}${vChip}</td>
+          <td class="cell-code">${esc(ev.ref)}${ev.note ? `<span class="cell-sub">${esc(ev.note)}</span>` : ""}</td>
+          <td class="num">${ev.debit > 0 ? `<span class="debit-amt">+${money(ev.debit)}</span>` : "—"}</td>
+          <td class="num">${ev.credit > 0 ? `<span class="credit-amt">-${money(ev.credit)}</span>` : "—"}</td>
+          <td class="num"><span class="balance-amt ${ev.runningBalance > 0 ? "owed-strong" : "is-zero"}">${money(ev.runningBalance)}</span></td>
+          <td>${esc(ev.agent || "—")}</td>
+        </tr>`;
+      }).join("");
+    }
+  }
+
+  // Render Breakdown View (Voucher Group Summary + Outstanding vs Settled)
+  const groupSummaryHtml = `
+    <div class="group-summary-box">
+      <h4 class="mini-head" style="margin-top:0">VOUCHER GROUP QUANTITY BREAKDOWN</h4>
+      <table class="grid-table">
+        <thead>
+          <tr>
+            <th>VOUCHER GROUP</th>
+            <th class="num">ISSUED QTY</th>
+            <th class="num">SETTLED QTY</th>
+            <th class="num">UNPAID QTY</th>
+            <th class="num">BALANCE OWED</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${TYPE_ORDER.map((t) => {
+            const g = (ledger.byTypeSummary && ledger.byTypeSummary[t]) || { issuedCount: 0, settledCount: 0, openCount: 0, openAmt: 0 };
+            return `<tr>
+              <td>${typeChip(t)}</td>
+              <td class="num mono">${g.issuedCount}</td>
+              <td class="num mono">${g.settledCount}</td>
+              <td class="num mono ${g.openCount > 0 ? "owed-strong" : ""}">${g.openCount}</td>
+              <td class="num ${g.openAmt > 0 ? "owed-strong" : "dim"}">${money(g.openAmt)}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>`;
+
+  $("#client-open").innerHTML = groupSummaryHtml + (open.length === 0
+    ? `<p class="hint" style="margin-top:12px">No unpaid vouchers — this account is clear.</p>`
+    : `<h4 class="mini-head">UNPAID VOUCHERS (${formatGroupQtyInline(ledger.openByType)})</h4>` +
+      `<table class="grid-table"><thead><tr><th>DATE</th><th>VOUCHER</th><th>TYPE</th><th class="num">OWED</th></tr></thead><tbody>` +
       open.map((s) => `<tr>
         <td class="cell-date">${fmtDateTime(s.soldAt)}</td>
         <td class="cell-code">${esc(s.voucherCode)}</td>
         <td>${typeChip(s.type)}</td>
         <td class="num owed-strong">${money(saleOutstanding(s))}</td>
-      </tr>`).join("") + `</tbody></table>`;
+      </tr>`).join("") + `</tbody></table>`);
 
-  // Which vouchers each payment actually cleared. Payments settle the oldest
-  // debt first, so this is what answers "has last month's balance been
-  // recovered yet" — without it a settlement is just a number and a date.
   const clearedBy = (p) => (p.allocations || []).map((a) => {
     const sale = db.sales.find((x) => x.id === a.saleId);
     if (!sale) return null;
     const part = a.amount < sale.price ? ` (${money(a.amount)} of ${money(sale.price)})` : "";
-    return `${sale.voucherCode}${part} · ${fmtDate(sale.soldAt)}`;
+    return `${sale.voucherCode} [${(VTYPES[sale.type] && VTYPES[sale.type].label) || sale.type}]${part} · ${fmtDate(sale.soldAt)}`;
   }).filter(Boolean);
 
-  $("#stmt-pays").innerHTML = pays.length === 0
+  $("#client-pays").innerHTML = pays.length === 0
     ? `<p class="hint">No payments recorded yet.</p>`
     : `<table class="grid-table"><thead><tr><th>DATE</th><th class="num">AMOUNT</th><th>METHOD</th><th>TAKEN BY</th><th>CLEARED</th></tr></thead><tbody>` +
       pays.map((p) => {
@@ -296,11 +558,55 @@ function openStatement(accountId) {
           : "<span class=\"cell-sub\">—</span>"}</td>
       </tr>`;
       }).join("") + `</tbody></table>`;
-
-  $("#stmt-settle").dataset.id = accountId;
-  $("#stmt-settle").hidden = balance <= 0;
-  $("#modal-stmt").hidden = false;
 }
+
+function switchClientLedgerTab(tabKey) {
+  const ledgerView = $("#client-ledger-view");
+  const breakdownView = $("#client-breakdown-view");
+  const tabLedger = $("#client-tab-btn-ledger");
+  const tabBreakdown = $("#client-tab-btn-breakdown");
+
+  if (tabKey === "breakdown") {
+    if (ledgerView) ledgerView.hidden = true;
+    if (breakdownView) breakdownView.hidden = false;
+    if (tabLedger) tabLedger.classList.remove("is-active");
+    if (tabBreakdown) tabBreakdown.classList.add("is-active");
+  } else {
+    if (ledgerView) ledgerView.hidden = false;
+    if (breakdownView) breakdownView.hidden = true;
+    if (tabLedger) tabLedger.classList.add("is-active");
+    if (tabBreakdown) tabBreakdown.classList.remove("is-active");
+  }
+}
+
+function openClientLedger(accountId) {
+  ui.selectedClientId = accountId;
+  setTab("clients");
+  renderClientsTab();
+}
+const openStatement = openClientLedger;
+const switchStatementTab = switchClientLedgerTab;
+
+function exportClientLedgerCSV() {
+  const accountId = ui.selectedClientId;
+  const ledger = accountId ? buildAccountLedger(accountId) : null;
+  if (!ledger || !ledger.events.length) return toast("No ledger entries to export", "err");
+  const head = ["Date", "Transaction Type", "Reference", "Note", "Debit (+)", "Credit (-)", "Running Balance", "Agent"];
+  const rows = ledger.events.map((ev) => [
+    new Date(ev.date).toISOString(),
+    ev.typeLabel || ev.type.toUpperCase(),
+    ev.ref,
+    ev.note || "",
+    ev.debit > 0 ? ev.debit : 0,
+    ev.credit > 0 ? ev.credit : 0,
+    ev.runningBalance,
+    ev.agent || "",
+  ]);
+  const safeName = (ledger.account.name || "client").toLowerCase().replace(/[^a-z0-9]/g, "-");
+  downloadCSV(`ledger-${safeName}-${dayKey(new Date())}.csv`, [head].concat(rows));
+  toast(`Exported transaction ledger for ${ledger.account.name}`);
+}
+const exportStatementLedgerCSV = exportClientLedgerCSV;
 
 function openSettle(accountId) {
   const acc = accountById(accountId);
@@ -364,6 +670,15 @@ function renderMonthEnd() {
   const closed = closingFor(user.id, period, site);
   const r = closed ? closed.totals : buildReport(user.id, period, site);
 
+  const myPeriodSales = db.sales.filter((s) => s.agentId === user.id && inSite(s, site) && inPeriod(s.soldAt, period) && !isReversed(s));
+  const myCashCounts = countByVoucherGroup(myPeriodSales.filter((s) => s.pay === "cash"));
+  const myCreditCounts = countByVoucherGroup(myPeriodSales.filter((s) => s.pay === "credit"));
+  const myTotalCounts = {
+    V5: (r.byType && r.byType.V5 ? r.byType.V5.count : myCashCounts.V5 + myCreditCounts.V5),
+    V10: (r.byType && r.byType.V10 ? r.byType.V10.count : myCashCounts.V10 + myCreditCounts.V10),
+    REC: (r.byType && r.byType.REC ? r.byType.REC.count : myCashCounts.REC + myCreditCounts.REC),
+  };
+
   $("#me-status").innerHTML = closed
     ? `<span class="chip chip-ok"><i></i>CLOSED ${fmtDateTime(closed.generatedAt)}</span>`
     : `<span class="chip chip-off"><i></i>OPEN PERIOD</span>`;
@@ -373,16 +688,19 @@ function renderMonthEnd() {
       <p class="tile-label">TOTAL CASH COLLECTED</p>
       <p class="tile-value">${money(r.totalCashCollected)}</p>
       <p class="tile-sub">SALES ${money(r.cashSalesTotal)} · SETTLEMENTS ${money(r.debtCollected)}</p>
+      ${renderTileGroupBreakdown(myCashCounts, "CASH SALES QTY BY GROUP")}
     </div>
     <div class="tile tile-warn">
       <p class="tile-label">OUTSTANDING DEBT</p>
       <p class="tile-value">${money(r.unpaidFromPeriod)}</p>
       <p class="tile-sub">FROM ${money(r.creditIssued)} ISSUED ON CREDIT</p>
+      ${renderTileGroupBreakdown(myCreditCounts, "CREDIT QTY BY GROUP")}
     </div>
     <div class="tile">
       <p class="tile-label">TRANSACTIONS</p>
       <p class="tile-value">${r.salesCount}</p>
       <p class="tile-sub">${r.cashCount} CASH · ${r.creditCount} CREDIT</p>
+      ${renderTileGroupBreakdown(myTotalCounts, "TOTAL QTY BY GROUP")}
     </div>`;
 
   $("#me-breakdown").innerHTML = `
